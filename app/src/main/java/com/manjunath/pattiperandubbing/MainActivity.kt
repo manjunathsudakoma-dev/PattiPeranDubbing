@@ -2,19 +2,22 @@ package com.manjunath.pattiperandubbing
 
 import android.Manifest
 import android.app.AlertDialog
+import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.*
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Environment
-import android.os.StrictMode
+import android.provider.MediaStore
 import android.widget.*
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.RandomAccessFile
 import java.nio.ByteBuffer
@@ -32,7 +35,8 @@ class MainActivity : AppCompatActivity() {
     private var currentPitch = 1.0f
     private var selectedVideoUri: Uri? = null
     private var tempDubWavFile: File? = null
-    private var lastExportedFile: File? = null
+    private var lastExportedUri: Uri? = null
+    private var lastExportedMime: String = "video/mp4"
 
     private val pickVideoLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         uri?.let {
@@ -45,10 +49,6 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        // Allow direct file URI sharing seamlessly
-        val builder = StrictMode.VmPolicy.Builder()
-        StrictMode.setVmPolicy(builder.build())
 
         val scrollView = ScrollView(this).apply {
             setBackgroundColor(0xFF121212.toInt())
@@ -115,7 +115,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Separate Export & Share Buttons Row
         val actionRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(0, 20, 0, 8)
@@ -236,7 +235,7 @@ class MainActivity : AppCompatActivity() {
             tempDubWavFile = outFile
 
             runOnUiThread {
-                statusText.text = "ரெக்கார்டிங் முடிந்தது! இப்போது '4. Export / Save' அழுத்தி பெயர் கொடுத்து சேமிக்கவும்."
+                statusText.text = "ரெக்கார்டிங் முடிந்தது! இப்போது '4. Export / Save' அழுத்தி கேலரியில் சேமிக்கவும்."
             }
         }
     }
@@ -254,51 +253,134 @@ class MainActivity : AppCompatActivity() {
         }
 
         AlertDialog.Builder(this)
-            .setTitle("ஃபைல் பெயரை உள்ளிடவும் (File Name)")
-            .setMessage("Downloads ஃபோல்டரில் சேமிக்க வேண்டிய பெயரை டைப் செய்யவும்:")
+            .setTitle("ஃபைல் பெயரை உள்ளிடவும்")
+            .setMessage("கேலரியில் (Gallery) சேமிக்க வேண்டிய வீடியோ பெயரை டைப் செய்யவும்:")
             .setView(inputEdit)
-            .setPositiveButton("Save to Downloads") { _, _ ->
+            .setPositiveButton("Save to Gallery") { _, _ ->
                 val rawName = inputEdit.text.toString().trim().replace(Regex("[^a-zA-Z0-9_-]"), "_")
                 val finalName = if (rawName.isEmpty()) "PattiPeran_Dub" else rawName
-                exportToDownloads(wavFile, finalName)
+                exportToGallery(wavFile, finalName)
             }
             .setNegativeButton("Cancel", null)
             .show()
     }
 
-    private fun exportToDownloads(wavFile: File, fileName: String) {
-        statusText.text = "Downloads ஃபோல்டரில் Export ஆகிறது... காத்திருக்கவும்."
+    private fun exportToGallery(wavFile: File, fileName: String) {
+        statusText.text = "வீடியோ தயாராகி கேலரியில் சேமிக்கப்படுகிறது... காத்திருக்கவும்."
         thread {
-            val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-            if (!downloadsDir.exists()) downloadsDir.mkdirs()
-
             val videoUri = selectedVideoUri
             if (videoUri != null) {
-                val mp4Out = File(downloadsDir, "$fileName.mp4")
-                val merged = mergeVideoAndWavToMp4(videoUri, wavFile, mp4Out)
-                if (merged && mp4Out.exists() && mp4Out.length() > 1000) {
-                    lastExportedFile = mp4Out
-                    runOnUiThread {
-                        statusText.text = "வெற்றி! வீடியோ சேமிக்கப்பட்டது: Downloads/${mp4Out.name}"
-                        Toast.makeText(this, "Downloads/${mp4Out.name} சேமிக்கப்பட்டது!", Toast.LENGTH_LONG).show()
+                val tempMp4 = File(cacheDir, "temp_merged_out.mp4")
+                if (tempMp4.exists()) tempMp4.delete()
+
+                val merged = mergeVideoAndWavToMp4(videoUri, wavFile, tempMp4)
+                if (merged && tempMp4.exists() && tempMp4.length() > 1000) {
+                    val savedUri = saveFileToMediaStoreVideo(tempMp4, "$fileName.mp4")
+                    if (savedUri != null) {
+                        lastExportedUri = savedUri
+                        lastExportedMime = "video/mp4"
+                        runOnUiThread {
+                            statusText.text = "வெற்றி! கேலரியில் சேமிக்கப்பட்டது: Movies/PattiPeranDubbing/$fileName.mp4"
+                            Toast.makeText(this, "கேலரியில் (Gallery) வீடியோ சேமிக்கப்பட்டது!", Toast.LENGTH_LONG).show()
+                        }
+                        return@thread
                     }
-                    return@thread
                 }
             }
 
-            // Fallback to saving WAV audio directly in Downloads
-            val wavOut = File(downloadsDir, "$fileName.wav")
-            wavFile.copyTo(wavOut, overwrite = true)
-            lastExportedFile = wavOut
-            runOnUiThread {
-                statusText.text = "வெற்றி! ஆடியோ சேமிக்கப்பட்டது: Downloads/${wavOut.name}"
-                Toast.makeText(this, "Downloads/${wavOut.name} சேமிக்கப்பட்டது!", Toast.LENGTH_LONG).show()
+            // Fallback: Save audio via MediaStore Music if video merge was skipped
+            val savedAudioUri = saveFileToMediaStoreAudio(wavFile, "$fileName.wav")
+            if (savedAudioUri != null) {
+                lastExportedUri = savedAudioUri
+                lastExportedMime = "audio/wav"
+                runOnUiThread {
+                    statusText.text = "ஆடியோ சேமிக்கப்பட்டது: Music/PattiPeranDubbing/$fileName.wav"
+                    Toast.makeText(this, "Music ஃபோல்டரில் சேமிக்கப்பட்டது!", Toast.LENGTH_LONG).show()
+                }
+            } else {
+                runOnUiThread {
+                    statusText.text = "சேமிப்பதில் பிழை ஏற்பட்டது. மீண்டும் முயற்சிக்கவும்."
+                }
             }
+        }
+    }
+
+    private fun saveFileToMediaStoreVideo(sourceFile: File, displayName: String): Uri? {
+        return try {
+            val values = ContentValues().apply {
+                put(MediaStore.Video.Media.DISPLAY_NAME, displayName)
+                put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/PattiPeranDubbing")
+                    put(MediaStore.Video.Media.IS_PENDING, 1)
+                }
+            }
+            val resolver = contentResolver
+            val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+            } else {
+                MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+            }
+            val itemUri = resolver.insert(collection, values) ?: return null
+            resolver.openOutputStream(itemUri)?.use { out ->
+                FileInputStream(sourceFile).use { input ->
+                    input.copyTo(out)
+                }
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                values.clear()
+                values.put(MediaStore.Video.Media.IS_PENDING, 0)
+                resolver.update(itemUri, values, null, null)
+            }
+            itemUri
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+    }
+
+    private fun saveFileToMediaStoreAudio(sourceFile: File, displayName: String): Uri? {
+        return try {
+            val values = ContentValues().apply {
+                put(MediaStore.Audio.Media.DISPLAY_NAME, displayName)
+                put(MediaStore.Audio.Media.MIME_TYPE, "audio/wav")
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    put(MediaStore.Audio.Media.RELATIVE_PATH, Environment.DIRECTORY_MUSIC + "/PattiPeranDubbing")
+                    put(MediaStore.Audio.Media.IS_PENDING, 1)
+                }
+            }
+            val resolver = contentResolver
+            val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+            } else {
+                MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+            }
+            val itemUri = resolver.insert(collection, values) ?: return null
+            resolver.openOutputStream(itemUri)?.use { out ->
+                FileInputStream(sourceFile).use { input ->
+                    input.copyTo(out)
+                }
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                values.clear()
+                values.put(MediaStore.Audio.Media.IS_PENDING, 0)
+                resolver.update(itemUri, values, null, null)
+            }
+            itemUri
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
         }
     }
 
     private fun mergeVideoAndWavToMp4(videoUri: Uri, wavFile: File, outMp4: File): Boolean {
         return try {
+            val retriever = MediaMetadataRetriever()
+            retriever.setDataSource(this, videoUri)
+            val rotationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)
+            val rotation = rotationStr?.toIntOrNull() ?: 0
+            retriever.release()
+
             val extractor = MediaExtractor()
             extractor.setDataSource(this, videoUri, null)
             var videoTrackIndex = -1
@@ -315,6 +397,7 @@ class MainActivity : AppCompatActivity() {
             if (videoTrackIndex < 0 || videoFormat == null) return false
 
             val muxer = MediaMuxer(outMp4.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            muxer.setOrientationHint(rotation)
             val muxerVideoTrack = muxer.addTrack(videoFormat)
 
             val sampleRate = 44100
@@ -327,7 +410,6 @@ class MainActivity : AppCompatActivity() {
             encoder.configure(aacFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             encoder.start()
 
-            // Copy video track first after audio format is ready
             val pcmBytes = wavFile.readBytes().drop(44).toByteArray()
             var pcmOffset = 0
             var muxerAudioTrack = -1
@@ -362,7 +444,6 @@ class MainActivity : AppCompatActivity() {
                     muxer.start()
                     muxerStarted = true
 
-                    // Write all video samples
                     extractor.selectTrack(videoTrackIndex)
                     val vidBuf = ByteBuffer.allocate(1024 * 1024)
                     val vidInfo = MediaCodec.BufferInfo()
@@ -372,7 +453,11 @@ class MainActivity : AppCompatActivity() {
                         vidInfo.offset = 0
                         vidInfo.size = size
                         vidInfo.presentationTimeUs = extractor.sampleTime
-                        vidInfo.flags = extractor.sampleFlags
+                        vidInfo.flags = if ((extractor.sampleFlags and MediaExtractor.SAMPLE_FLAG_SYNC) != 0) {
+                            MediaCodec.BUFFER_FLAG_KEY_FRAME
+                        } else {
+                            0
+                        }
                         muxer.writeSampleData(muxerVideoTrack, vidBuf, vidInfo)
                         extractor.advance()
                     }
@@ -405,16 +490,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun shareExportedFile() {
-        val fileToShare = lastExportedFile
-        if (fileToShare == null || !fileToShare.exists()) {
-            Toast.makeText(this, "முதலில் '4. Export / Save' அழுத்தி ஃபைலை சேமிக்கவும்!", Toast.LENGTH_SHORT).show()
+        val uriToShare = lastExportedUri
+        if (uriToShare == null) {
+            Toast.makeText(this, "முதலில் '4. Export / Save' அழுத்தி வீடியோவைச் சேமிக்கவும்!", Toast.LENGTH_SHORT).show()
             return
         }
 
-        val mimeType = if (fileToShare.extension.equals("mp4", true)) "video/mp4" else "audio/wav"
         val shareIntent = Intent(Intent.ACTION_SEND).apply {
-            type = mimeType
-            putExtra(Intent.EXTRA_STREAM, Uri.fromFile(fileToShare))
+            type = lastExportedMime
+            putExtra(Intent.EXTRA_STREAM, uriToShare)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
         startActivity(Intent.createChooser(shareIntent, "டப்பிங் வீடியோவைப் பகிரவும் (Share)"))
