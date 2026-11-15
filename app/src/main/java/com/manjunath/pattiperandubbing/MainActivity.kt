@@ -1,11 +1,14 @@
 package com.manjunath.pattiperandubbing
 
 import android.Manifest
+import android.app.AlertDialog
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.*
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
+import android.os.StrictMode
 import android.widget.*
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -14,6 +17,7 @@ import androidx.core.content.ContextCompat
 import java.io.File
 import java.io.FileOutputStream
 import java.io.RandomAccessFile
+import java.nio.ByteBuffer
 import kotlin.concurrent.thread
 
 class MainActivity : AppCompatActivity() {
@@ -21,9 +25,14 @@ class MainActivity : AppCompatActivity() {
     private lateinit var videoView: VideoView
     private lateinit var statusText: TextView
     private lateinit var btnRecord: Button
+    private lateinit var btnExport: Button
+    private lateinit var btnShare: Button
+
     private var isRecording = false
     private var currentPitch = 1.0f
     private var selectedVideoUri: Uri? = null
+    private var tempDubWavFile: File? = null
+    private var lastExportedFile: File? = null
 
     private val pickVideoLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         uri?.let {
@@ -37,23 +46,30 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // Allow direct file URI sharing seamlessly
+        val builder = StrictMode.VmPolicy.Builder()
+        StrictMode.setVmPolicy(builder.build())
+
+        val scrollView = ScrollView(this).apply {
+            setBackgroundColor(0xFF121212.toInt())
+        }
+
         val rootLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(32, 48, 32, 32)
-            setBackgroundColor(0xFF121212.toInt())
+            setPadding(32, 48, 32, 48)
         }
 
         val titleText = TextView(this).apply {
             text = "பாட்டி - பேரன் Live Dubbing Studio"
             textSize = 20f
             setTextColor(0xFFFFFFFF.toInt())
-            setPadding(0, 0, 0, 24)
+            setPadding(0, 0, 0, 20)
         }
 
         videoView = VideoView(this).apply {
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                650
+                600
             )
         }
 
@@ -65,7 +81,7 @@ class MainActivity : AppCompatActivity() {
         val voiceLabel = TextView(this).apply {
             text = "2. குரல் தேர்வு (Voice Mode):"
             setTextColor(0xFFCCCCCC.toInt())
-            setPadding(0, 24, 0, 8)
+            setPadding(0, 20, 0, 8)
         }
 
         val radioGroup = RadioGroup(this).apply {
@@ -79,8 +95,8 @@ class MainActivity : AppCompatActivity() {
 
             setOnCheckedChangeListener { _, checkedId ->
                 currentPitch = when (checkedId) {
-                    2 -> 0.80f // பாட்டி குரல் (Base / Aged tone)
-                    3 -> 1.32f // பேரன் குரல் (High pitch kid tone)
+                    2 -> 0.80f
+                    3 -> 1.32f
                     else -> 1.0f
                 }
             }
@@ -99,10 +115,39 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // Separate Export & Share Buttons Row
+        val actionRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, 20, 0, 8)
+        }
+
+        btnExport = Button(this).apply {
+            text = "4. Export / Save"
+            setBackgroundColor(0xFF1565C0.toInt())
+            setTextColor(0xFFFFFFFF.toInt())
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                setMargins(0, 0, 12, 0)
+            }
+            setOnClickListener { showFileNameDialogAndExport() }
+        }
+
+        btnShare = Button(this).apply {
+            text = "5. Share"
+            setBackgroundColor(0xFF6A1B9A.toInt())
+            setTextColor(0xFFFFFFFF.toInt())
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                setMargins(12, 0, 0, 0)
+            }
+            setOnClickListener { shareExportedFile() }
+        }
+
+        actionRow.addView(btnExport)
+        actionRow.addView(btnShare)
+
         statusText = TextView(this).apply {
             text = "குறிப்பு: எக்கோ வராமல் இருக்க ஹெட்செட் (Headset) பயன்படுத்தவும்."
             setTextColor(0xFFAAAAAA.toInt())
-            setPadding(0, 24, 0, 0)
+            setPadding(0, 20, 0, 0)
         }
 
         rootLayout.addView(titleText)
@@ -111,9 +156,11 @@ class MainActivity : AppCompatActivity() {
         rootLayout.addView(voiceLabel)
         rootLayout.addView(radioGroup)
         rootLayout.addView(btnRecord)
+        rootLayout.addView(actionRow)
         rootLayout.addView(statusText)
 
-        setContentView(rootLayout)
+        scrollView.addView(rootLayout)
+        setContentView(scrollView)
     }
 
     private fun checkPermissionAndStart() {
@@ -126,7 +173,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun startDubbing() {
         isRecording = true
-        btnRecord.text = "நிறுத்து & சேமி (Stop & Save)"
+        btnRecord.text = "நிறுத்து (Stop Recording)"
         btnRecord.setBackgroundColor(0xFFC62828.toInt())
         statusText.text = "Live Dubbing நடக்கிறது... பேசுங்கள்!"
 
@@ -152,11 +199,9 @@ class MainActivity : AppCompatActivity() {
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build()
 
-            val musicDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC)
-            if (!musicDir.exists()) musicDir.mkdirs()
-            val outFile = File(musicDir, "PattiPeran_Dub_${System.currentTimeMillis()}.wav")
+            val outFile = File(cacheDir, "temp_dub_voice.wav")
             val fos = FileOutputStream(outFile)
-            fos.write(ByteArray(44)) // WAV header placeholder
+            fos.write(ByteArray(44))
 
             recorder.startRecording()
             player.play()
@@ -188,11 +233,191 @@ class MainActivity : AppCompatActivity() {
             fos.close()
 
             writeWavHeader(outFile, totalAudioLen, sampleRate.toLong(), 1, (sampleRate * 2).toLong())
+            tempDubWavFile = outFile
 
             runOnUiThread {
-                statusText.text = "சேமிக்கப்பட்டது: Music/${outFile.name}"
+                statusText.text = "ரெக்கார்டிங் முடிந்தது! இப்போது '4. Export / Save' அழுத்தி பெயர் கொடுத்து சேமிக்கவும்."
             }
         }
+    }
+
+    private fun showFileNameDialogAndExport() {
+        val wavFile = tempDubWavFile
+        if (wavFile == null || !wavFile.exists()) {
+            Toast.makeText(this, "முதலில் Live Dubbing ரெக்கார்ட் செய்யவும்!", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val inputEdit = EditText(this).apply {
+            hint = "உதாரணம்: Patti_Comedy_1"
+            setText("PattiPeran_${System.currentTimeMillis() / 1000}")
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("ஃபைல் பெயரை உள்ளிடவும் (File Name)")
+            .setMessage("Downloads ஃபோல்டரில் சேமிக்க வேண்டிய பெயரை டைப் செய்யவும்:")
+            .setView(inputEdit)
+            .setPositiveButton("Save to Downloads") { _, _ ->
+                val rawName = inputEdit.text.toString().trim().replace(Regex("[^a-zA-Z0-9_-]"), "_")
+                val finalName = if (rawName.isEmpty()) "PattiPeran_Dub" else rawName
+                exportToDownloads(wavFile, finalName)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun exportToDownloads(wavFile: File, fileName: String) {
+        statusText.text = "Downloads ஃபோல்டரில் Export ஆகிறது... காத்திருக்கவும்."
+        thread {
+            val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            if (!downloadsDir.exists()) downloadsDir.mkdirs()
+
+            val videoUri = selectedVideoUri
+            if (videoUri != null) {
+                val mp4Out = File(downloadsDir, "$fileName.mp4")
+                val merged = mergeVideoAndWavToMp4(videoUri, wavFile, mp4Out)
+                if (merged && mp4Out.exists() && mp4Out.length() > 1000) {
+                    lastExportedFile = mp4Out
+                    runOnUiThread {
+                        statusText.text = "வெற்றி! வீடியோ சேமிக்கப்பட்டது: Downloads/${mp4Out.name}"
+                        Toast.makeText(this, "Downloads/${mp4Out.name} சேமிக்கப்பட்டது!", Toast.LENGTH_LONG).show()
+                    }
+                    return@thread
+                }
+            }
+
+            // Fallback to saving WAV audio directly in Downloads
+            val wavOut = File(downloadsDir, "$fileName.wav")
+            wavFile.copyTo(wavOut, overwrite = true)
+            lastExportedFile = wavOut
+            runOnUiThread {
+                statusText.text = "வெற்றி! ஆடியோ சேமிக்கப்பட்டது: Downloads/${wavOut.name}"
+                Toast.makeText(this, "Downloads/${wavOut.name} சேமிக்கப்பட்டது!", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun mergeVideoAndWavToMp4(videoUri: Uri, wavFile: File, outMp4: File): Boolean {
+        return try {
+            val extractor = MediaExtractor()
+            extractor.setDataSource(this, videoUri, null)
+            var videoTrackIndex = -1
+            var videoFormat: MediaFormat? = null
+            for (i in 0 until extractor.trackCount) {
+                val format = extractor.getTrackFormat(i)
+                val mime = format.getString(MediaFormat.KEY_MIME) ?: ""
+                if (mime.startsWith("video/")) {
+                    videoTrackIndex = i
+                    videoFormat = format
+                    break
+                }
+            }
+            if (videoTrackIndex < 0 || videoFormat == null) return false
+
+            val muxer = MediaMuxer(outMp4.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            val muxerVideoTrack = muxer.addTrack(videoFormat)
+
+            val sampleRate = 44100
+            val aacFormat = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, 1).apply {
+                setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
+                setInteger(MediaFormat.KEY_BIT_RATE, 128000)
+                setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384)
+            }
+            val encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
+            encoder.configure(aacFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            encoder.start()
+
+            // Copy video track first after audio format is ready
+            val pcmBytes = wavFile.readBytes().drop(44).toByteArray()
+            var pcmOffset = 0
+            var muxerAudioTrack = -1
+            var muxerStarted = false
+            val bufferInfo = MediaCodec.BufferInfo()
+            var inputDone = false
+            var outputDone = false
+            var presentationTimeUs = 0L
+
+            while (!outputDone) {
+                if (!inputDone) {
+                    val inIdx = encoder.dequeueInputBuffer(10000)
+                    if (inIdx >= 0) {
+                        val inBuf = encoder.getInputBuffer(inIdx)!!
+                        inBuf.clear()
+                        if (pcmOffset >= pcmBytes.size) {
+                            encoder.queueInputBuffer(inIdx, 0, 0, presentationTimeUs, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                            inputDone = true
+                        } else {
+                            val chunk = minOf(inBuf.remaining(), pcmBytes.size - pcmOffset)
+                            inBuf.put(pcmBytes, pcmOffset, chunk)
+                            encoder.queueInputBuffer(inIdx, 0, chunk, presentationTimeUs, 0)
+                            pcmOffset += chunk
+                            presentationTimeUs += (chunk / 2L) * 1000000L / sampleRate
+                        }
+                    }
+                }
+
+                val outIdx = encoder.dequeueOutputBuffer(bufferInfo, 10000)
+                if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    muxerAudioTrack = muxer.addTrack(encoder.outputFormat)
+                    muxer.start()
+                    muxerStarted = true
+
+                    // Write all video samples
+                    extractor.selectTrack(videoTrackIndex)
+                    val vidBuf = ByteBuffer.allocate(1024 * 1024)
+                    val vidInfo = MediaCodec.BufferInfo()
+                    while (true) {
+                        val size = extractor.readSampleData(vidBuf, 0)
+                        if (size < 0) break
+                        vidInfo.offset = 0
+                        vidInfo.size = size
+                        vidInfo.presentationTimeUs = extractor.sampleTime
+                        vidInfo.flags = extractor.sampleFlags
+                        muxer.writeSampleData(muxerVideoTrack, vidBuf, vidInfo)
+                        extractor.advance()
+                    }
+                } else if (outIdx >= 0) {
+                    val outBuf = encoder.getOutputBuffer(outIdx)!!
+                    if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0 && bufferInfo.size > 0 && muxerStarted) {
+                        outBuf.position(bufferInfo.offset)
+                        outBuf.limit(bufferInfo.offset + bufferInfo.size)
+                        muxer.writeSampleData(muxerAudioTrack, outBuf, bufferInfo)
+                    }
+                    encoder.releaseOutputBuffer(outIdx, false)
+                    if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                        outputDone = true
+                    }
+                }
+            }
+
+            encoder.stop()
+            encoder.release()
+            extractor.release()
+            if (muxerStarted) {
+                muxer.stop()
+                muxer.release()
+            }
+            true
+        } catch (e: Exception) {
+            e.printStackTrace()
+            false
+        }
+    }
+
+    private fun shareExportedFile() {
+        val fileToShare = lastExportedFile
+        if (fileToShare == null || !fileToShare.exists()) {
+            Toast.makeText(this, "முதலில் '4. Export / Save' அழுத்தி ஃபைலை சேமிக்கவும்!", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val mimeType = if (fileToShare.extension.equals("mp4", true)) "video/mp4" else "audio/wav"
+        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+            type = mimeType
+            putExtra(Intent.EXTRA_STREAM, Uri.fromFile(fileToShare))
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivity(Intent.createChooser(shareIntent, "டப்பிங் வீடியோவைப் பகிரவும் (Share)"))
     }
 
     private fun applyPitchShift(input: ShortArray, length: Int, pitch: Float): ShortArray {
