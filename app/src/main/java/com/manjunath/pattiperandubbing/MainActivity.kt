@@ -31,8 +31,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnExport: Button
     private lateinit var btnShare: Button
 
-    private var isRecording = false
-    private var currentPitch = 1.0f
+    @Volatile private var isRecording = false
+    @Volatile private var currentPitch = 1.0f
+    private var recordingThread: Thread? = null
     private var selectedVideoUri: Uri? = null
     private var tempDubWavFile: File? = null
     private var lastExportedUri: Uri? = null
@@ -170,8 +171,25 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 101) {
+            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                startDubbing()
+            } else {
+                statusText.text = "மைக்ரோஃபோன் அனுமதி தேவை. Settings-ல் அனுமதி வழங்கவும்."
+                Toast.makeText(this, "Record Audio அனுமதி வழங்கப்படவில்லை", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
     private fun startDubbing() {
+        if (selectedVideoUri == null) {
+            Toast.makeText(this, "முதலில் Gallery-யிலிருந்து வீடியோ தேர்ந்தெடுக்கவும்!", Toast.LENGTH_LONG).show()
+            return
+        }
         isRecording = true
+        btnExport.isEnabled = false
         btnRecord.text = "நிறுத்து (Stop Recording)"
         btnRecord.setBackgroundColor(0xFFC62828.toInt())
         statusText.text = "Live Dubbing நடக்கிறது... பேசுங்கள்!"
@@ -181,7 +199,7 @@ class MainActivity : AppCompatActivity() {
             videoView.start()
         }
 
-        thread {
+        recordingThread = thread {
             val sampleRate = 44100
             val channelConfigIn = AudioFormat.CHANNEL_IN_MONO
             val channelConfigOut = AudioFormat.CHANNEL_OUT_MONO
@@ -235,12 +253,18 @@ class MainActivity : AppCompatActivity() {
             tempDubWavFile = outFile
 
             runOnUiThread {
+                recordingThread = null
+                btnExport.isEnabled = true
                 statusText.text = "ரெக்கார்டிங் முடிந்தது! இப்போது '4. Export / Save' அழுத்தி கேலரியில் சேமிக்கவும்."
             }
         }
     }
 
     private fun showFileNameDialogAndExport() {
+        if (isRecording || recordingThread?.isAlive == true) {
+            Toast.makeText(this, "முதலில் Dubbing-ஐ Stop செய்து முடியும் வரை காத்திருக்கவும்.", Toast.LENGTH_LONG).show()
+            return
+        }
         val wavFile = tempDubWavFile
         if (wavFile == null || !wavFile.exists()) {
             Toast.makeText(this, "முதலில் Live Dubbing ரெக்கார்ட் செய்யவும்!", Toast.LENGTH_SHORT).show()
@@ -410,8 +434,10 @@ class MainActivity : AppCompatActivity() {
             encoder.configure(aacFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             encoder.start()
 
-            val pcmBytes = wavFile.readBytes().drop(44).toByteArray()
-            var pcmOffset = 0
+            // Stream PCM from disk instead of loading the complete recording into RAM.
+            val pcmInput = FileInputStream(wavFile).apply { skip(44L) }
+            val pcmChunk = ByteArray(64 * 1024)
+            var inputEof = false
             var muxerAudioTrack = -1
             var muxerStarted = false
             val bufferInfo = MediaCodec.BufferInfo()
@@ -425,15 +451,22 @@ class MainActivity : AppCompatActivity() {
                     if (inIdx >= 0) {
                         val inBuf = encoder.getInputBuffer(inIdx)!!
                         inBuf.clear()
-                        if (pcmOffset >= pcmBytes.size) {
+                        val readLimit = minOf(inBuf.remaining(), pcmChunk.size)
+                        val readCount = pcmInput.read(pcmChunk, 0, readLimit)
+                        if (readCount <= 0) {
                             encoder.queueInputBuffer(inIdx, 0, 0, presentationTimeUs, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                             inputDone = true
+                            inputEof = true
                         } else {
-                            val chunk = minOf(inBuf.remaining(), pcmBytes.size - pcmOffset)
-                            inBuf.put(pcmBytes, pcmOffset, chunk)
-                            encoder.queueInputBuffer(inIdx, 0, chunk, presentationTimeUs, 0)
-                            pcmOffset += chunk
-                            presentationTimeUs += (chunk / 2L) * 1000000L / sampleRate
+                            // Keep PCM samples aligned to 16-bit mono frames.
+                            val chunk = readCount - (readCount % 2)
+                            if (chunk == 0) {
+                                encoder.queueInputBuffer(inIdx, 0, 0, presentationTimeUs, 0)
+                            } else {
+                                inBuf.put(pcmChunk, 0, chunk)
+                                encoder.queueInputBuffer(inIdx, 0, chunk, presentationTimeUs, 0)
+                                presentationTimeUs += (chunk / 2L) * 1000000L / sampleRate
+                            }
                         }
                     }
                 }
@@ -445,7 +478,8 @@ class MainActivity : AppCompatActivity() {
                     muxerStarted = true
 
                     extractor.selectTrack(videoTrackIndex)
-                    val vidBuf = ByteBuffer.allocate(1024 * 1024)
+                    val maxVideoInput = if (videoFormat.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE)) videoFormat.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE).coerceAtLeast(1024 * 1024) else 4 * 1024 * 1024
+                    val vidBuf = ByteBuffer.allocate(maxVideoInput)
                     val vidInfo = MediaCodec.BufferInfo()
                     while (true) {
                         val size = extractor.readSampleData(vidBuf, 0)
@@ -475,6 +509,7 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
+            pcmInput.close()
             encoder.stop()
             encoder.release()
             extractor.release()
