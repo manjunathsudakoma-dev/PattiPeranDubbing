@@ -301,6 +301,9 @@ class MainActivity : AppCompatActivity() {
 
             runOnUiThread {
                 recordingThread = null
+                btnRecord.isEnabled = true
+                btnRecord.text = "3. Live Dubbing தொடங்கு (Start)"
+                btnRecord.setBackgroundColor(0xFF2E7D32.toInt())
                 btnExport.isEnabled = true
                 statusText.text = "ரெக்கார்டிங் முடிந்தது! இப்போது '4. Export / Save' அழுத்தி கேலரியில் சேமிக்கவும்."
             }
