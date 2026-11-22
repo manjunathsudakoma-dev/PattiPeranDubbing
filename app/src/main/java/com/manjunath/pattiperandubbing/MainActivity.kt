@@ -30,6 +30,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnRecord: Button
     private lateinit var btnExport: Button
     private lateinit var btnShare: Button
+    private lateinit var muteOriginalSwitch: Switch
+    private var videoMediaPlayer: MediaPlayer? = null
+    @Volatile private var originalVideoMuted = true
 
     @Volatile private var isRecording = false
     @Volatile private var currentPitch = 1.0f
@@ -40,11 +43,13 @@ class MainActivity : AppCompatActivity() {
     private var lastExportedMime: String = "video/mp4"
 
     private val pickVideoLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
-        uri?.let {
-            selectedVideoUri = it
-            videoView.setVideoURI(it)
+        if (uri != null) {
+            selectedVideoUri = uri
+            videoView.setVideoURI(uri)
             videoView.start()
-            statusText.text = "வீடியோ தயார்! குரலைத் தேர்ந்தெடுத்து Dubbing தொடங்கவும்."
+            statusText.text = "வீடியோ தயார்! Original audio mute நிலை அமைக்கப்பட்டுள்ளது."
+        } else {
+            statusText.text = "வீடியோ தேர்வு ரத்து செய்யப்பட்டது."
         }
     }
 
@@ -73,10 +78,31 @@ class MainActivity : AppCompatActivity() {
                 600
             )
         }
+        videoView.setOnPreparedListener { mediaPlayer ->
+            videoMediaPlayer = mediaPlayer
+            applyOriginalAudioMute()
+        }
+
+        muteOriginalSwitch = Switch(this).apply {
+            text = "Original Video Audio: MUTE"
+            textSize = 16f
+            setTextColor(0xFFFFFFFF.toInt())
+            isChecked = true
+            setPadding(8, 12, 8, 12)
+            setOnCheckedChangeListener { _, checked ->
+                originalVideoMuted = checked
+                text = if (checked) "Original Video Audio: MUTE" else "Original Video Audio: ON"
+                applyOriginalAudioMute()
+                Toast.makeText(this@MainActivity, if (checked) "Original video sound muted" else "Original video sound on", Toast.LENGTH_SHORT).show()
+            }
+        }
 
         val btnSelectVideo = Button(this).apply {
             text = "1. கேலரியிலிருந்து வீடியோ தேர்ந்தெடு"
-            setOnClickListener { pickVideoLauncher.launch("video/*") }
+            setOnClickListener {
+                statusText.text = "Gallery திறக்கப்படுகிறது..."
+                pickVideoLauncher.launch("video/*")
+            }
         }
 
         val voiceLabel = TextView(this).apply {
@@ -152,6 +178,7 @@ class MainActivity : AppCompatActivity() {
 
         rootLayout.addView(titleText)
         rootLayout.addView(videoView)
+        rootLayout.addView(muteOriginalSwitch)
         rootLayout.addView(btnSelectVideo)
         rootLayout.addView(voiceLabel)
         rootLayout.addView(radioGroup)
@@ -185,6 +212,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun startDubbing() {
         if (selectedVideoUri == null) {
+            statusText.text = "முதலில் 1. Gallery-யிலிருந்து வீடியோ தேர்ந்தெடுக்கவும்."
             Toast.makeText(this, "முதலில் Gallery-யிலிருந்து வீடியோ தேர்ந்தெடுக்கவும்!", Toast.LENGTH_LONG).show()
             return
         }
@@ -206,7 +234,27 @@ class MainActivity : AppCompatActivity() {
             val audioFormat = AudioFormat.ENCODING_PCM_16BIT
 
             val minBufSize = AudioRecord.getMinBufferSize(sampleRate, channelConfigIn, audioFormat)
-            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return@thread
+            if (minBufSize <= 0) {
+                isRecording = false
+                runOnUiThread {
+                    btnRecord.text = "3. Live Dubbing தொடங்கு (Start)"
+                    btnRecord.setBackgroundColor(0xFF2E7D32.toInt())
+                    btnExport.isEnabled = true
+                    statusText.text = "இந்த போனில் AudioRecord தொடங்க முடியவில்லை. Microphone permission சரிபார்க்கவும்."
+                    recordingThread = null
+                }
+                return@thread
+            }
+            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                isRecording = false
+                runOnUiThread {
+                    btnExport.isEnabled = true
+                    btnRecord.text = "3. Live Dubbing தொடங்கு (Start)"
+                    statusText.text = "Microphone permission தேவை."
+                    recordingThread = null
+                }
+                return@thread
+            }
 
             val recorder = AudioRecord(MediaRecorder.AudioSource.VOICE_COMMUNICATION, sampleRate, channelConfigIn, audioFormat, minBufSize)
             val player = AudioTrack.Builder()
@@ -230,7 +278,6 @@ class MainActivity : AppCompatActivity() {
                 val read = recorder.read(buffer, 0, buffer.size)
                 if (read > 0) {
                     val processed = applyPitchShift(buffer, read, currentPitch)
-                    player.playbackRate = (sampleRate * currentPitch).toInt()
                     player.write(processed, 0, processed.size)
 
                     val byteBuf = ByteArray(processed.size * 2)
@@ -267,7 +314,8 @@ class MainActivity : AppCompatActivity() {
         }
         val wavFile = tempDubWavFile
         if (wavFile == null || !wavFile.exists()) {
-            Toast.makeText(this, "முதலில் Live Dubbing ரெக்கார்ட் செய்யவும்!", Toast.LENGTH_SHORT).show()
+            statusText.text = "Export செய்ய முன் வீடியோ தேர்வு செய்து Live Dubbing record செய்து Stop செய்யவும்."
+            Toast.makeText(this, "முதலில் Live Dubbing ரெக்கார்ட் செய்து Stop செய்யவும்!", Toast.LENGTH_LONG).show()
             return
         }
 
@@ -527,7 +575,8 @@ class MainActivity : AppCompatActivity() {
     private fun shareExportedFile() {
         val uriToShare = lastExportedUri
         if (uriToShare == null) {
-            Toast.makeText(this, "முதலில் '4. Export / Save' அழுத்தி வீடியோவைச் சேமிக்கவும்!", Toast.LENGTH_SHORT).show()
+            statusText.text = "Share செய்ய முன் 4. Export / Save மூலம் கோப்பைச் சேமிக்கவும்."
+            Toast.makeText(this, "முதலில் Export / Save செய்யவும்!", Toast.LENGTH_LONG).show()
             return
         }
 
@@ -552,9 +601,19 @@ class MainActivity : AppCompatActivity() {
 
     private fun stopDubbing() {
         isRecording = false
-        btnRecord.text = "3. Live Dubbing தொடங்கு (Start)"
-        btnRecord.setBackgroundColor(0xFF2E7D32.toInt())
+        btnRecord.isEnabled = false
+        btnRecord.text = "Recording நிறுத்தப்படுகிறது..."
+        statusText.text = "Recording file முடிக்கப்படுகிறது. சிறிது காத்திருக்கவும்..."
         if (videoView.isPlaying) videoView.pause()
+    }
+
+    private fun applyOriginalAudioMute() {
+        val volume = if (originalVideoMuted) 0f else 1f
+        try {
+            videoMediaPlayer?.setVolume(volume, volume)
+        } catch (e: IllegalStateException) {
+            statusText.text = "Video audio control இன்னும் தயாராகவில்லை."
+        }
     }
 
     private fun writeWavHeader(file: File, totalAudioLen: Long, sampleRate: Long, channels: Int, byteRate: Long) {
