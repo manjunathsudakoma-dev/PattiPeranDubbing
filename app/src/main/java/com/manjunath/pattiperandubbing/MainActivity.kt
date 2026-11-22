@@ -35,7 +35,8 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var originalVideoMuted = true
 
     @Volatile private var isRecording = false
-    @Volatile private var currentPitch = 1.0f
+    @Volatile private var currentVoiceMode = 0
+    private var voiceLowPassState = 0f
     private var recordingThread: Thread? = null
     private var selectedVideoUri: Uri? = null
     private var tempDubWavFile: File? = null
@@ -121,10 +122,16 @@ class MainActivity : AppCompatActivity() {
             addView(rbPeran)
 
             setOnCheckedChangeListener { _, checkedId ->
-                currentPitch = when (checkedId) {
-                    2 -> 0.80f
-                    3 -> 1.32f
-                    else -> 1.0f
+                currentVoiceMode = when (checkedId) {
+                    2 -> 1
+                    3 -> 2
+                    else -> 0
+                }
+                voiceLowPassState = 0f
+                statusText.text = when (currentVoiceMode) {
+                    1 -> "பாட்டி Voice Effect தேர்வு செய்யப்பட்டது. Live Dubbing தொடங்கலாம்."
+                    2 -> "பேரன் Voice Effect தேர்வு செய்யப்பட்டது. Live Dubbing தொடங்கலாம்."
+                    else -> "இயல்பு குரல் தேர்வு செய்யப்பட்டது."
                 }
             }
         }
@@ -227,6 +234,7 @@ class MainActivity : AppCompatActivity() {
             videoView.start()
         }
 
+        voiceLowPassState = 0f
         recordingThread = thread {
             val sampleRate = 44100
             val channelConfigIn = AudioFormat.CHANNEL_IN_MONO
@@ -277,7 +285,7 @@ class MainActivity : AppCompatActivity() {
             while (isRecording) {
                 val read = recorder.read(buffer, 0, buffer.size)
                 if (read > 0) {
-                    val processed = applyPitchShift(buffer, read, currentPitch)
+                    val processed = applyVoiceEffect(buffer, read, currentVoiceMode)
                     player.write(processed, 0, processed.size)
 
                     val byteBuf = ByteArray(processed.size * 2)
@@ -591,13 +599,22 @@ class MainActivity : AppCompatActivity() {
         startActivity(Intent.createChooser(shareIntent, "டப்பிங் வீடியோவைப் பகிரவும் (Share)"))
     }
 
-    private fun applyPitchShift(input: ShortArray, length: Int, pitch: Float): ShortArray {
-        if (pitch == 1.0f) return input.copyOf(length)
-        val outLen = (length / pitch).toInt().coerceAtLeast(1)
-        val output = ShortArray(outLen)
-        for (i in 0 until outLen) {
-            val srcIdx = (i * pitch).toInt().coerceIn(0, length - 1)
-            output[i] = input[srcIdx]
+    // Lightweight offline voice-tone presets. These alter tone/EQ while preserving
+    // the exact sample count, so the recorded audio duration stays aligned with video.
+    private fun applyVoiceEffect(input: ShortArray, length: Int, mode: Int): ShortArray {
+        if (mode == 0) return input.copyOf(length)
+        val output = ShortArray(length)
+        val smoothing = if (mode == 1) 0.16f else 0.055f
+        val dryMix = if (mode == 1) 0.62f else 0.78f
+        val toneMix = if (mode == 1) 0.38f else 0.58f
+        for (i in 0 until length) {
+            val sample = input[i].toFloat()
+            voiceLowPassState += smoothing * (sample - voiceLowPassState)
+            val tone = if (mode == 1) voiceLowPassState else sample - voiceLowPassState
+            val mixed = (sample * dryMix) + (tone * toneMix)
+            // Gentle peak control prevents clipping after the tone mix.
+            val limited = (mixed / (1f + kotlin.math.abs(mixed) / 42000f)).coerceIn(-32768f, 32767f)
+            output[i] = limited.toInt().toShort()
         }
         return output
     }
