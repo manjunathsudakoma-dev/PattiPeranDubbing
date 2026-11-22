@@ -2,7 +2,7 @@ name: Build Android APK
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "fix/mp4-dubbing-export" ]
   workflow_dispatch:
 
 jobs:
