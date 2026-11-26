@@ -19,6 +19,7 @@ import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.transformer.Composition
 import androidx.media3.transformer.EditedMediaItem
+import androidx.media3.transformer.EditedMediaItemSequence
 import androidx.media3.transformer.Effects
 import androidx.media3.transformer.ExportException
 import androidx.media3.transformer.ExportResult
@@ -396,46 +397,48 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun exportToGallery(wavFile: File, fileName: String) {
-        statusText.text = "Creating video and saving to Gallery... Please wait."
+        btnExport.isEnabled = false
+        statusText.text = "Preparing your dubbed MP4..."
         thread {
             val videoUri = selectedVideoUri
-            if (videoUri != null) {
-                val tempAspectVideo = File(cacheDir, "temp_aspect_video.mp4")
-                val tempMp4 = File(cacheDir, "temp_merged_out.mp4")
-                if (tempAspectVideo.exists()) tempAspectVideo.delete()
-                if (tempMp4.exists()) tempMp4.delete()
+            if (videoUri == null) {
+                runOnUiThread {
+                    btnExport.isEnabled = true
+                    statusText.text = "Please select a video before exporting."
+                }
+                return@thread
+            }
 
-                runOnUiThread { statusText.text = if (selectedAspectRatio == 0) "Cropping video to 9:16 Shorts..." else "Cropping video to 16:9 YouTube..." }
-                val transformed = transformVideoToAspectRatio(videoUri, tempAspectVideo, selectedAspectRatio)
-                val mergeSource = if (transformed) Uri.fromFile(tempAspectVideo) else videoUri
-                val merged = transformed && mergeVideoAndWavToMp4(mergeSource, wavFile, tempMp4)
-                if (merged && tempMp4.exists() && tempMp4.length() > 1000) {
-                    val savedUri = saveFileToMediaStoreVideo(tempMp4, "$fileName.mp4")
-                    if (savedUri != null) {
-                        lastExportedUri = savedUri
-                        lastExportedMime = "video/mp4"
-                        runOnUiThread {
-                            statusText.text = "Success! Saved to Movies/PattiPeranDubbing/$fileName.mp4"
-                            Toast.makeText(this, "Video saved to Gallery!", Toast.LENGTH_LONG).show()
-                        }
-                        return@thread
-                    }
+            val tempMp4 = File(cacheDir, "temp_merged_out.mp4")
+            if (tempMp4.exists()) tempMp4.delete()
+
+            runOnUiThread {
+                statusText.text = if (selectedAspectRatio == 0) {
+                    "Exporting 9:16 video with your recorded voice..."
+                } else {
+                    "Exporting 16:9 video with your recorded voice..."
                 }
             }
 
-            // Fallback: Save audio via MediaStore Music if video merge was skipped
-            val savedAudioUri = saveFileToMediaStoreAudio(wavFile, "$fileName.wav")
-            if (savedAudioUri != null) {
-                lastExportedUri = savedAudioUri
-                lastExportedMime = "audio/wav"
-                runOnUiThread {
-                    statusText.text = "Audio saved to Music/PattiPeranDubbing/$fileName.wav"
-                    Toast.makeText(this, "Audio saved to Music folder.", Toast.LENGTH_LONG).show()
+            val merged = composeVideoAndWavToMp4(videoUri, wavFile, tempMp4, selectedAspectRatio)
+            if (merged && tempMp4.exists() && tempMp4.length() > 1000) {
+                val savedUri = saveFileToMediaStoreVideo(tempMp4, "$fileName.mp4")
+                if (savedUri != null) {
+                    lastExportedUri = savedUri
+                    lastExportedMime = "video/mp4"
+                    runOnUiThread {
+                        btnExport.isEnabled = true
+                        statusText.text = "Success! Saved to Movies/PattiPeranDubbing/$fileName.mp4"
+                        Toast.makeText(this, "Dubbed video saved to Gallery!", Toast.LENGTH_LONG).show()
+                    }
+                    return@thread
                 }
-            } else {
-                runOnUiThread {
-                    statusText.text = "Could not save the file. Please try again."
-                }
+            }
+
+            runOnUiThread {
+                btnExport.isEnabled = true
+                statusText.text = "MP4 export failed. Your recording is kept. Try another standard MP4 video."
+                Toast.makeText(this, "Video export failed. No audio-only file was saved.", Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -509,234 +512,102 @@ class MainActivity : AppCompatActivity() {
     }
 
     @OptIn(UnstableApi::class)
-    private fun transformVideoToAspectRatio(inputUri: Uri, outputFile: File, ratio: Int): Boolean {
+    private fun composeVideoAndWavToMp4(
+        videoUri: Uri,
+        wavFile: File,
+        outputFile: File,
+        ratio: Int
+    ): Boolean {
         val width = if (ratio == 0) 1080 else 1920
         val height = if (ratio == 0) 1920 else 1080
-        val latch = CountDownLatch(1)
-        var success = false
-        try {
-            val editedItem = EditedMediaItem.Builder(MediaItem.fromUri(inputUri))
-                .setEffects(Effects(
-                    emptyList(),
-                    listOf(Presentation.createForWidthAndHeight(
-                        width,
-                        height,
-                        Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP
-                    ))
-                ))
-                .build()
-            val transformer = Transformer.Builder(this)
-                .addListener(object : Transformer.Listener {
-                    override fun onCompleted(composition: Composition, exportResult: ExportResult) {
-                        success = outputFile.exists() && outputFile.length() > 1000
-                        latch.countDown()
-                    }
-                    override fun onError(composition: Composition, exportResult: ExportResult, exportException: ExportException) {
-                        exportException.printStackTrace()
-                        success = false
-                        latch.countDown()
-                    }
-                })
-                .build()
-            transformer.start(editedItem, outputFile.absolutePath)
-            if (!latch.await(5, TimeUnit.MINUTES)) {
-                transformer.cancel()
-                return false
-            }
-            return success
-        } catch (e: Exception) {
-            e.printStackTrace()
-            return false
-        }
-    }
+        val completed = CountDownLatch(1)
+        val startPosted = CountDownLatch(1)
+        val success = java.util.concurrent.atomic.AtomicBoolean(false)
+        val failureMessage = java.util.concurrent.atomic.AtomicReference<String?>(null)
+        val transformerHolder = arrayOfNulls<Transformer>(1)
 
-    private fun mergeVideoAndWavToMp4(videoUri: Uri, wavFile: File, outMp4: File): Boolean {
-        val encodedAudio = File(cacheDir, "dub_audio_track.mp4")
         return try {
-            if (encodedAudio.exists()) encodedAudio.delete()
-            if (!encodeWavToAacMp4(wavFile, encodedAudio)) return false
-
-            val retriever = MediaMetadataRetriever()
-            retriever.setDataSource(this, videoUri)
-            val rotation = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
-            retriever.release()
-
-            val videoExtractor = MediaExtractor()
-            videoExtractor.setDataSource(this, videoUri, null)
-            var videoSourceTrack = -1
-            var videoFormat: MediaFormat? = null
-            for (i in 0 until videoExtractor.trackCount) {
-                val format = videoExtractor.getTrackFormat(i)
-                if ((format.getString(MediaFormat.KEY_MIME) ?: "").startsWith("video/")) {
-                    videoSourceTrack = i
-                    videoFormat = format
-                    break
-                }
-            }
-            if (videoSourceTrack < 0 || videoFormat == null) {
-                videoExtractor.release()
+            if (!wavFile.exists() || wavFile.length() <= 44L) {
+                failureMessage.set("The recorded voice file is empty.")
                 return false
             }
 
-            val audioExtractor = MediaExtractor()
-            audioExtractor.setDataSource(encodedAudio.absolutePath)
-            var audioSourceTrack = -1
-            var audioFormat: MediaFormat? = null
-            for (i in 0 until audioExtractor.trackCount) {
-                val format = audioExtractor.getTrackFormat(i)
-                if ((format.getString(MediaFormat.KEY_MIME) ?: "").startsWith("audio/")) {
-                    audioSourceTrack = i
-                    audioFormat = format
-                    break
+            // Keep the selected video as the visual track, remove its original audio,
+            // and add the recorded PCM WAV as a parallel audio-only sequence.
+            val videoItem = EditedMediaItem.Builder(MediaItem.fromUri(videoUri))
+                .setRemoveAudio(true)
+                .setEffects(
+                    Effects(
+                        emptyList(),
+                        listOf(
+                            Presentation.createForWidthAndHeight(
+                                width,
+                                height,
+                                Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP
+                            )
+                        )
+                    )
+                )
+                .build()
+
+            val dubbedAudioItem = EditedMediaItem.Builder(
+                MediaItem.fromUri(Uri.fromFile(wavFile))
+            )
+                .setRemoveVideo(true)
+                .build()
+
+            val videoSequence = EditedMediaItemSequence.withVideoFrom(listOf(videoItem))
+            val audioSequence = EditedMediaItemSequence.withAudioFrom(listOf(dubbedAudioItem))
+            val composition = Composition.Builder(listOf(videoSequence, audioSequence)).build()
+
+            // Transformer must be created and started on the app's main thread.
+            runOnUiThread {
+                try {
+                    val transformer = Transformer.Builder(this)
+                        .addListener(object : Transformer.Listener {
+                            override fun onCompleted(composition: Composition, exportResult: ExportResult) {
+                                success.set(outputFile.exists() && outputFile.length() > 1000L)
+                                completed.countDown()
+                            }
+
+                            override fun onError(
+                                composition: Composition,
+                                exportResult: ExportResult,
+                                exportException: ExportException
+                            ) {
+                                failureMessage.set(exportException.message ?: "Media3 export error")
+                                exportException.printStackTrace()
+                                success.set(false)
+                                completed.countDown()
+                            }
+                        })
+                        .build()
+                    transformerHolder[0] = transformer
+                    transformer.start(composition, outputFile.absolutePath)
+                } catch (e: Exception) {
+                    failureMessage.set(e.message ?: "Could not start MP4 export")
+                    completed.countDown()
+                } finally {
+                    startPosted.countDown()
                 }
             }
-            if (audioSourceTrack < 0 || audioFormat == null) {
-                videoExtractor.release()
-                audioExtractor.release()
+
+            if (!startPosted.await(30, TimeUnit.SECONDS)) {
+                failureMessage.set("Timed out while starting MP4 export")
                 return false
             }
-
-            val muxer = MediaMuxer(outMp4.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-            muxer.setOrientationHint(rotation)
-            val outVideoTrack = muxer.addTrack(videoFormat)
-            val outAudioTrack = muxer.addTrack(audioFormat)
-            muxer.start()
-            videoExtractor.selectTrack(videoSourceTrack)
-            audioExtractor.selectTrack(audioSourceTrack)
-
-            val videoMax = if (videoFormat.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE)) videoFormat.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE).coerceAtLeast(256 * 1024) else 4 * 1024 * 1024
-            val audioMax = if (audioFormat.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE)) audioFormat.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE).coerceAtLeast(16 * 1024) else 256 * 1024
-            val videoBuffer = ByteBuffer.allocateDirect(videoMax)
-            val audioBuffer = ByteBuffer.allocateDirect(audioMax)
-            val info = MediaCodec.BufferInfo()
-            var videoDone = false
-            var audioDone = false
-
-            // Interleave audio/video samples by presentation timestamp.
-            while (!videoDone || !audioDone) {
-                val nextVideoTime = if (videoDone) Long.MAX_VALUE else videoExtractor.sampleTime
-                val nextAudioTime = if (audioDone) Long.MAX_VALUE else audioExtractor.sampleTime
-                if (nextVideoTime == -1L) videoDone = true
-                if (nextAudioTime == -1L) audioDone = true
-                if (videoDone && audioDone) break
-
-                if (!videoDone && (audioDone || nextVideoTime <= nextAudioTime)) {
-                    videoBuffer.clear()
-                    val size = videoExtractor.readSampleData(videoBuffer, 0)
-                    if (size < 0) {
-                        videoDone = true
-                    } else {
-                        info.set(0, size, videoExtractor.sampleTime, videoExtractor.sampleFlags)
-                        muxer.writeSampleData(outVideoTrack, videoBuffer, info)
-                        videoExtractor.advance()
-                    }
-                } else if (!audioDone) {
-                    audioBuffer.clear()
-                    val size = audioExtractor.readSampleData(audioBuffer, 0)
-                    if (size < 0) {
-                        audioDone = true
-                    } else {
-                        info.set(0, size, audioExtractor.sampleTime, audioExtractor.sampleFlags)
-                        muxer.writeSampleData(outAudioTrack, audioBuffer, info)
-                        audioExtractor.advance()
-                    }
-                }
+            if (!completed.await(10, TimeUnit.MINUTES)) {
+                runOnUiThread { transformerHolder[0]?.cancel() }
+                failureMessage.set("MP4 export timed out")
+                return false
             }
-
-            muxer.stop()
-            muxer.release()
-            videoExtractor.release()
-            audioExtractor.release()
-            encodedAudio.delete()
-            outMp4.exists() && outMp4.length() > 1000
+            if (!success.get()) {
+                android.util.Log.e("PattiPeranExport", failureMessage.get() ?: "MP4 export failed")
+            }
+            success.get()
         } catch (e: Exception) {
-            e.printStackTrace()
-            try { encodedAudio.delete() } catch (_: Exception) {}
+            android.util.Log.e("PattiPeranExport", "MP4 composition export failed", e)
             false
-        }
-    }
-
-    private fun encodeWavToAacMp4(wavFile: File, outFile: File): Boolean {
-        var encoder: MediaCodec? = null
-        var muxer: MediaMuxer? = null
-        var input: FileInputStream? = null
-        return try {
-            val sampleRate = 44100
-            val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, 1).apply {
-                setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
-                setInteger(MediaFormat.KEY_BIT_RATE, 128000)
-                setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384)
-            }
-            encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
-            encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-            encoder.start()
-            muxer = MediaMuxer(outFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-            input = FileInputStream(wavFile).apply { skip(44L) }
-
-            val pcm = ByteArray(64 * 1024)
-            val info = MediaCodec.BufferInfo()
-            var audioTrack = -1
-            var muxerStarted = false
-            var inputDone = false
-            var outputDone = false
-            var pts = 0L
-
-            while (!outputDone) {
-                if (!inputDone) {
-                    val inputIndex = encoder.dequeueInputBuffer(10000)
-                    if (inputIndex >= 0) {
-                        val buffer = encoder.getInputBuffer(inputIndex)!!
-                        buffer.clear()
-                        val count = input.read(pcm, 0, minOf(buffer.remaining(), pcm.size))
-                        if (count <= 0) {
-                            encoder.queueInputBuffer(inputIndex, 0, 0, pts, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                            inputDone = true
-                        } else {
-                            val aligned = count - (count % 2)
-                            buffer.put(pcm, 0, aligned)
-                            encoder.queueInputBuffer(inputIndex, 0, aligned, pts, 0)
-                            pts += (aligned / 2L) * 1000000L / sampleRate
-                        }
-                    }
-                }
-
-                val outputIndex = encoder.dequeueOutputBuffer(info, 10000)
-                when {
-                    outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-                        audioTrack = muxer.addTrack(encoder.outputFormat)
-                        muxer.start()
-                        muxerStarted = true
-                    }
-                    outputIndex >= 0 -> {
-                        val output = encoder.getOutputBuffer(outputIndex)!!
-                        if ((info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0 && info.size > 0 && muxerStarted) {
-                            output.position(info.offset)
-                            output.limit(info.offset + info.size)
-                            muxer.writeSampleData(audioTrack, output, info)
-                        }
-                        encoder.releaseOutputBuffer(outputIndex, false)
-                        if ((info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) outputDone = true
-                    }
-                }
-            }
-            input.close()
-            encoder.stop()
-            encoder.release()
-            encoder = null
-            if (muxerStarted) {
-                muxer.stop()
-                muxer.release()
-                muxer = null
-            }
-            outFile.exists() && outFile.length() > 500
-        } catch (e: Exception) {
-            e.printStackTrace()
-            false
-        } finally {
-            try { input?.close() } catch (_: Exception) {}
-            try { encoder?.stop() } catch (_: Exception) {}
-            try { encoder?.release() } catch (_: Exception) {}
-            try { muxer?.release() } catch (_: Exception) {}
         }
     }
 
