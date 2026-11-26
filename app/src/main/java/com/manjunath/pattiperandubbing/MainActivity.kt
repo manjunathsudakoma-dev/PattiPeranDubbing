@@ -49,7 +49,7 @@ class MainActivity : AppCompatActivity() {
             selectedVideoUri = uri
             videoView.setVideoURI(uri)
             videoView.start()
-            statusText.text = "Video ready. Choose a voice mode and press START DUBBING."
+            statusText.text = "Loading video preview..."
         } else {
             statusText.text = "Video selection cancelled."
         }
@@ -82,9 +82,10 @@ class MainActivity : AppCompatActivity() {
             setBackgroundColor(0xFF000000.toInt())
         }
         videoView = VideoView(this).apply {
+            // Fill the preview container; VideoView keeps the video's aspect ratio.
             layoutParams = FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
                 Gravity.CENTER
             )
             setBackgroundColor(0xFF000000.toInt())
@@ -93,6 +94,12 @@ class MainActivity : AppCompatActivity() {
         videoView.setOnPreparedListener { mediaPlayer ->
             videoMediaPlayer = mediaPlayer
             applyOriginalAudioMute()
+            statusText.text = "Video loaded. Choose a voice mode and press START DUBBING."
+        }
+        videoView.setOnErrorListener { _, what, extra ->
+            videoMediaPlayer = null
+            statusText.text = "Cannot play this video format (error $what/$extra). Try another MP4 video."
+            true
         }
 
         muteOriginalSwitch = Switch(this).apply {
