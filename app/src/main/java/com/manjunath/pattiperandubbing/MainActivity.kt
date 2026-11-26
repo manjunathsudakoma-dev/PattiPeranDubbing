@@ -17,6 +17,16 @@ import android.view.TextureView
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.transformer.Composition
+import androidx.media3.transformer.EditedMediaItem
+import androidx.media3.transformer.Effects
+import androidx.media3.transformer.ExportException
+import androidx.media3.transformer.ExportResult
+import androidx.media3.transformer.Presentation
+import androidx.media3.transformer.Transformer
+import androidx.media3.common.util.UnstableApi
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
@@ -48,6 +58,7 @@ class MainActivity : AppCompatActivity() {
     private var tempDubWavFile: File? = null
     private var lastExportedUri: Uri? = null
     private var lastExportedMime: String = "video/mp4"
+    @Volatile private var selectedAspectRatio = 0 // 0 = 9:16 Shorts, 1 = 16:9 YouTube
 
     private val pickVideoLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         if (uri != null) {
@@ -123,8 +134,25 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        val ratioLabel = TextView(this).apply {
+            text = "3. VIDEO FORMAT"
+            setTextColor(0xFFCCCCCC.toInt())
+            setPadding(0, 18, 0, 8)
+        }
+        val ratioGroup = RadioGroup(this).apply {
+            orientation = RadioGroup.HORIZONTAL
+            val rbShorts = RadioButton(context).apply { text = "9:16 SHORTS"; setTextColor(0xFFFFFFFF.toInt()); id = 91; isChecked = true }
+            val rbYoutube = RadioButton(context).apply { text = "16:9 YOUTUBE"; setTextColor(0xFFFFFFFF.toInt()); id = 92 }
+            addView(rbShorts)
+            addView(rbYoutube)
+            setOnCheckedChangeListener { _, checkedId ->
+                selectedAspectRatio = if (checkedId == 92) 1 else 0
+                statusText.text = if (selectedAspectRatio == 0) "Export format: 9:16 YouTube Shorts / Reels." else "Export format: 16:9 YouTube video."
+            }
+        }
+
         val voiceLabel = TextView(this).apply {
-            text = "2. SELECT VOICE MODE"
+            text = "4. SELECT VOICE MODE"
             setTextColor(0xFFCCCCCC.toInt())
             setPadding(0, 20, 0, 8)
         }
@@ -154,7 +182,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         btnRecord = Button(this).apply {
-            text = "3. START / STOP DUBBING"
+            text = "5. START / STOP DUBBING"
             setBackgroundColor(0xFF2E7D32.toInt())
             setTextColor(0xFFFFFFFF.toInt())
             setOnClickListener {
@@ -172,7 +200,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         btnExport = Button(this).apply {
-            text = "4. Export / Save"
+            text = "6. EXPORT / SAVE"
             setBackgroundColor(0xFF1565C0.toInt())
             setTextColor(0xFFFFFFFF.toInt())
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
@@ -182,7 +210,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         btnShare = Button(this).apply {
-            text = "5. Share"
+            text = "7. SHARE"
             setBackgroundColor(0xFF6A1B9A.toInt())
             setTextColor(0xFFFFFFFF.toInt())
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
@@ -204,6 +232,8 @@ class MainActivity : AppCompatActivity() {
         rootLayout.addView(videoPreviewContainer)
         rootLayout.addView(muteOriginalSwitch)
         rootLayout.addView(btnSelectVideo)
+        rootLayout.addView(ratioLabel)
+        rootLayout.addView(ratioGroup)
         rootLayout.addView(voiceLabel)
         rootLayout.addView(radioGroup)
         rootLayout.addView(btnRecord)
@@ -370,10 +400,15 @@ class MainActivity : AppCompatActivity() {
         thread {
             val videoUri = selectedVideoUri
             if (videoUri != null) {
+                val tempAspectVideo = File(cacheDir, "temp_aspect_video.mp4")
                 val tempMp4 = File(cacheDir, "temp_merged_out.mp4")
+                if (tempAspectVideo.exists()) tempAspectVideo.delete()
                 if (tempMp4.exists()) tempMp4.delete()
 
-                val merged = mergeVideoAndWavToMp4(videoUri, wavFile, tempMp4)
+                runOnUiThread { statusText.text = if (selectedAspectRatio == 0) "Cropping video to 9:16 Shorts..." else "Cropping video to 16:9 YouTube..." }
+                val transformed = transformVideoToAspectRatio(videoUri, tempAspectVideo, selectedAspectRatio)
+                val mergeSource = if (transformed) Uri.fromFile(tempAspectVideo) else videoUri
+                val merged = transformed && mergeVideoAndWavToMp4(mergeSource, wavFile, tempMp4)
                 if (merged && tempMp4.exists() && tempMp4.length() > 1000) {
                     val savedUri = saveFileToMediaStoreVideo(tempMp4, "$fileName.mp4")
                     if (savedUri != null) {
@@ -470,6 +505,48 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {
             e.printStackTrace()
             null
+        }
+    }
+
+    @OptIn(UnstableApi::class)
+    private fun transformVideoToAspectRatio(inputUri: Uri, outputFile: File, ratio: Int): Boolean {
+        val width = if (ratio == 0) 1080 else 1920
+        val height = if (ratio == 0) 1920 else 1080
+        val latch = CountDownLatch(1)
+        var success = false
+        try {
+            val editedItem = EditedMediaItem.Builder(MediaItem.fromUri(inputUri))
+                .setEffects(Effects(
+                    emptyList(),
+                    listOf(Presentation.createForWidthAndHeight(
+                        width,
+                        height,
+                        Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP
+                    ))
+                ))
+                .build()
+            val transformer = Transformer.Builder(this)
+                .addListener(object : Transformer.Listener {
+                    override fun onCompleted(composition: Composition, exportResult: ExportResult) {
+                        success = outputFile.exists() && outputFile.length() > 1000
+                        latch.countDown()
+                    }
+                    override fun onError(composition: Composition, exportResult: ExportResult, exportException: ExportException) {
+                        exportException.printStackTrace()
+                        success = false
+                        latch.countDown()
+                    }
+                })
+                .build()
+            transformer.start(editedItem, outputFile.absolutePath)
+            if (!latch.await(5, TimeUnit.MINUTES)) {
+                transformer.cancel()
+                return false
+            }
+            return success
+        } catch (e: Exception) {
+            e.printStackTrace()
+            return false
         }
     }
 
