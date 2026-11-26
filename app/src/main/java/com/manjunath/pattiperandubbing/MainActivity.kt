@@ -9,6 +9,8 @@ import android.media.*
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.Environment
 import android.provider.MediaStore
 import android.widget.*
@@ -48,6 +50,25 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnExport: Button
     private lateinit var btnShare: Button
     private lateinit var muteOriginalSwitch: Switch
+    private lateinit var videoSeekBar: SeekBar
+    private lateinit var videoTimeText: TextView
+    private var isUserSeeking = false
+    private val seekHandler = Handler(Looper.getMainLooper())
+    private val seekUpdater = object : Runnable {
+        override fun run() {
+            val player = videoPlayer
+            if (player != null && !isUserSeeking) {
+                val duration = player.duration.coerceAtLeast(0L)
+                val position = player.currentPosition.coerceAtLeast(0L)
+                videoSeekBar.max = 1000
+                videoSeekBar.progress = if (duration > 0L) {
+                    ((position * 1000L) / duration).toInt().coerceIn(0, 1000)
+                } else 0
+                videoTimeText.text = "${formatVideoTime(position)} / ${formatVideoTime(duration)}"
+            }
+            seekHandler.postDelayed(this, 250L)
+        }
+    }
     
     @Volatile private var originalVideoMuted = true
 
@@ -104,6 +125,44 @@ class MainActivity : AppCompatActivity() {
             )
         }
         videoPreviewContainer.addView(videoTextureView)
+
+        videoSeekBar = SeekBar(this).apply {
+            max = 1000
+            progress = 0
+            isEnabled = false
+            contentDescription = "Video seek bar"
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                    if (fromUser) {
+                        val duration = videoPlayer?.duration ?: 0L
+                        val target = if (duration > 0L) duration * progress / 1000L else 0L
+                        videoTimeText.text = "${formatVideoTime(target)} / ${formatVideoTime(duration)}"
+                    }
+                }
+
+                override fun onStartTrackingTouch(seekBar: SeekBar?) {
+                    isUserSeeking = true
+                }
+
+                override fun onStopTrackingTouch(seekBar: SeekBar?) {
+                    val player = videoPlayer
+                    val duration = player?.duration ?: 0L
+                    if (player != null && duration > 0L) {
+                        player.seekTo(duration * videoSeekBar.progress / 1000L)
+                    }
+                    isUserSeeking = false
+                }
+            })
+        }
+
+        videoTimeText = TextView(this).apply {
+            text = "00:00 / 00:00"
+            textSize = 12f
+            setTextColor(0xFFCCCCCC.toInt())
+            gravity = Gravity.END
+            setPadding(0, 0, 0, 12)
+        }
+
         videoTextureView.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
             override fun onSurfaceTextureAvailable(surface: android.graphics.SurfaceTexture, width: Int, height: Int) {
                 selectedVideoUri?.let { loadVideoPreview(it) }
@@ -231,6 +290,8 @@ class MainActivity : AppCompatActivity() {
 
         rootLayout.addView(titleText)
         rootLayout.addView(videoPreviewContainer)
+        rootLayout.addView(videoSeekBar)
+        rootLayout.addView(videoTimeText)
         rootLayout.addView(muteOriginalSwitch)
         rootLayout.addView(btnSelectVideo)
         rootLayout.addView(ratioLabel)
@@ -243,6 +304,20 @@ class MainActivity : AppCompatActivity() {
 
         scrollView.addView(rootLayout)
         setContentView(scrollView)
+        seekHandler.post(seekUpdater)
+    }
+
+    private fun formatVideoTime(milliseconds: Long): String {
+        if (milliseconds <= 0L) return "00:00"
+        val totalSeconds = milliseconds / 1000L
+        val hours = totalSeconds / 3600L
+        val minutes = (totalSeconds % 3600L) / 60L
+        val seconds = totalSeconds % 60L
+        return if (hours > 0L) {
+            String.format(java.util.Locale.US, "%02d:%02d:%02d", hours, minutes, seconds)
+        } else {
+            String.format(java.util.Locale.US, "%02d:%02d", minutes, seconds)
+        }
     }
 
     private fun checkPermissionAndStart() {
@@ -670,7 +745,12 @@ class MainActivity : AppCompatActivity() {
                 player.addListener(object : Player.Listener {
                     override fun onPlaybackStateChanged(playbackState: Int) {
                         when (playbackState) {
-                            Player.STATE_READY -> statusText.text = "Video loaded. Press START DUBBING when ready."
+                            Player.STATE_READY -> {
+                                videoSeekBar.isEnabled = true
+                                videoSeekBar.progress = 0
+                                videoTimeText.text = "00:00 / ${formatVideoTime(player.duration)}"
+                                statusText.text = "Video loaded. Drag the seek dot to move through the video."
+                            }
                             Player.STATE_BUFFERING -> statusText.text = "Loading video preview..."
                             Player.STATE_ENDED -> statusText.text = "Video playback finished. Press START DUBBING to replay."
                         }
@@ -698,6 +778,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        seekHandler.removeCallbacks(seekUpdater)
         videoPlayer?.release()
         videoPlayer = null
         super.onDestroy()
