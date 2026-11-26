@@ -342,7 +342,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val inputEdit = EditText(this).apply {
-            hint = "உதாரணம்: Patti_Comedy_1"
+            hint = "Example: Patti_Comedy_1"
             setText("PattiPeran_${System.currentTimeMillis() / 1000}")
         }
 
@@ -597,7 +597,7 @@ class MainActivity : AppCompatActivity() {
     private fun shareExportedFile() {
         val uriToShare = lastExportedUri
         if (uriToShare == null) {
-            statusText.text = "Share செய்ய முன் 4. Export / Save மூலம் கோப்பைச் சேமிக்கவும்."
+            statusText.text = "Please export and save the video before sharing."
             Toast.makeText(this, "Please export and save the video first.", Toast.LENGTH_LONG).show()
             return
         }
