@@ -255,6 +255,13 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        val btnEraseDubbing = Button(this).apply {
+            text = "ERASE ALL DUBBING"
+            setBackgroundColor(0xFFB71C1C.toInt())
+            setTextColor(0xFFFFFFFF.toInt())
+            setOnClickListener { confirmEraseDubbing() }
+        }
+
         val actionRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(0, 20, 0, 8)
@@ -300,6 +307,7 @@ class MainActivity : AppCompatActivity() {
         rootLayout.addView(voiceLabel)
         rootLayout.addView(radioGroup)
         rootLayout.addView(btnRecord)
+        rootLayout.addView(btnEraseDubbing)
         rootLayout.addView(actionRow)
         rootLayout.addView(statusText)
 
@@ -440,6 +448,43 @@ class MainActivity : AppCompatActivity() {
                 statusText.text = "Recording complete. Press EXPORT / SAVE to create your video."
             }
         }
+    }
+
+    private fun confirmEraseDubbing() {
+        if (isRecording || recordingThread?.isAlive == true) {
+            Toast.makeText(this, "Stop recording and wait before erasing.", Toast.LENGTH_LONG).show()
+            return
+        }
+
+        val wavFile = tempDubWavFile ?: File(cacheDir, "temp_dub_voice.wav")
+        if (!wavFile.exists()) {
+            statusText.text = "There is no dubbing recording to erase."
+            Toast.makeText(this, "No dubbing recording found.", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("ERASE ALL DUBBING?")
+            .setMessage("This will delete the complete current dubbing recording. Your selected video will remain. You can record again from the beginning.")
+            .setPositiveButton("Erase") { _, _ ->
+                val deleted = wavFile.delete()
+                tempDubWavFile = null
+                btnExport.isEnabled = false
+                videoPlayer?.seekTo(0)
+                videoPlayer?.pause()
+                statusText.text = if (deleted || !wavFile.exists()) {
+                    "Dubbing erased. Select START DUBBING to record again."
+                } else {
+                    "Could not erase the recording. Please try again."
+                }
+                Toast.makeText(
+                    this,
+                    if (deleted || !wavFile.exists()) "All dubbing erased." else "Erase failed.",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun showFileNameDialogAndExport() {
