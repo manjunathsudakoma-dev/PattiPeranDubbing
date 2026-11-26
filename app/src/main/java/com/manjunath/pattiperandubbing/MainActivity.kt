@@ -12,6 +12,7 @@ import android.os.Bundle
 import android.os.Environment
 import android.provider.MediaStore
 import android.widget.*
+import android.view.Gravity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
@@ -48,9 +49,9 @@ class MainActivity : AppCompatActivity() {
             selectedVideoUri = uri
             videoView.setVideoURI(uri)
             videoView.start()
-            statusText.text = "வீடியோ தயார்! Original audio mute நிலை அமைக்கப்பட்டுள்ளது."
+            statusText.text = "Video ready. Choose a voice mode and press START DUBBING."
         } else {
-            statusText.text = "வீடியோ தேர்வு ரத்து செய்யப்பட்டது."
+            statusText.text = "Video selection cancelled."
         }
     }
 
@@ -67,18 +68,28 @@ class MainActivity : AppCompatActivity() {
         }
 
         val titleText = TextView(this).apply {
-            text = "பாட்டி - பேரன் Live Dubbing Studio"
+            text = "Patti - Peran Live Dubbing Studio"
             textSize = 20f
             setTextColor(0xFFFFFFFF.toInt())
             setPadding(0, 0, 0, 20)
         }
 
-        videoView = VideoView(this).apply {
+        val videoPreviewContainer = FrameLayout(this).apply {
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                600
-            )
+                (260 * resources.displayMetrics.density).toInt()
+            ).apply { setMargins(0, 8, 0, 16) }
+            setBackgroundColor(0xFF000000.toInt())
         }
+        videoView = VideoView(this).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER
+            )
+            setBackgroundColor(0xFF000000.toInt())
+        }
+        videoPreviewContainer.addView(videoView)
         videoView.setOnPreparedListener { mediaPlayer ->
             videoMediaPlayer = mediaPlayer
             applyOriginalAudioMute()
@@ -99,24 +110,24 @@ class MainActivity : AppCompatActivity() {
         }
 
         val btnSelectVideo = Button(this).apply {
-            text = "1. கேலரியிலிருந்து வீடியோ தேர்ந்தெடு"
+            text = "1. SELECT VIDEO FROM GALLERY"
             setOnClickListener {
-                statusText.text = "Gallery திறக்கப்படுகிறது..."
+                statusText.text = "Opening Gallery..."
                 pickVideoLauncher.launch("video/*")
             }
         }
 
         val voiceLabel = TextView(this).apply {
-            text = "2. குரல் தேர்வு (Voice Mode):"
+            text = "2. SELECT VOICE MODE"
             setTextColor(0xFFCCCCCC.toInt())
             setPadding(0, 20, 0, 8)
         }
 
         val radioGroup = RadioGroup(this).apply {
             orientation = RadioGroup.HORIZONTAL
-            val rbNormal = RadioButton(context).apply { text = "இயல்பு"; setTextColor(0xFFFFFFFF.toInt()); id = 1; isChecked = true }
-            val rbPatti = RadioButton(context).apply { text = "பாட்டி (Patti)"; setTextColor(0xFFFFD54F.toInt()); id = 2 }
-            val rbPeran = RadioButton(context).apply { text = "பேரன் (Peran)"; setTextColor(0xFF4FC3F7.toInt()); id = 3 }
+            val rbNormal = RadioButton(context).apply { text = "NORMAL"; setTextColor(0xFFFFFFFF.toInt()); id = 1; isChecked = true }
+            val rbPatti = RadioButton(context).apply { text = "PATTI"; setTextColor(0xFFFFD54F.toInt()); id = 2 }
+            val rbPeran = RadioButton(context).apply { text = "PERAN"; setTextColor(0xFF4FC3F7.toInt()); id = 3 }
             addView(rbNormal)
             addView(rbPatti)
             addView(rbPeran)
@@ -129,15 +140,15 @@ class MainActivity : AppCompatActivity() {
                 }
                 voiceLowPassState = 0f
                 statusText.text = when (currentVoiceMode) {
-                    1 -> "பாட்டி Voice Effect தேர்வு செய்யப்பட்டது. Live Dubbing தொடங்கலாம்."
-                    2 -> "பேரன் Voice Effect தேர்வு செய்யப்பட்டது. Live Dubbing தொடங்கலாம்."
-                    else -> "இயல்பு குரல் தேர்வு செய்யப்பட்டது."
+                    1 -> "PATTI tone effect selected. Press START DUBBING."
+                    2 -> "PERAN tone effect selected. Press START DUBBING."
+                    else -> "NORMAL voice selected."
                 }
             }
         }
 
         btnRecord = Button(this).apply {
-            text = "3. Live Dubbing தொடங்கு (Start)"
+            text = "3. START / STOP DUBBING"
             setBackgroundColor(0xFF2E7D32.toInt())
             setTextColor(0xFFFFFFFF.toInt())
             setOnClickListener {
@@ -178,13 +189,13 @@ class MainActivity : AppCompatActivity() {
         actionRow.addView(btnShare)
 
         statusText = TextView(this).apply {
-            text = "குறிப்பு: எக்கோ வராமல் இருக்க ஹெட்செட் (Headset) பயன்படுத்தவும்."
+            text = "TIP: Use headphones to reduce echo. Select a video, choose a voice mode, then start dubbing."
             setTextColor(0xFFAAAAAA.toInt())
             setPadding(0, 20, 0, 0)
         }
 
         rootLayout.addView(titleText)
-        rootLayout.addView(videoView)
+        rootLayout.addView(videoPreviewContainer)
         rootLayout.addView(muteOriginalSwitch)
         rootLayout.addView(btnSelectVideo)
         rootLayout.addView(voiceLabel)
@@ -211,23 +222,23 @@ class MainActivity : AppCompatActivity() {
             if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
                 startDubbing()
             } else {
-                statusText.text = "மைக்ரோஃபோன் அனுமதி தேவை. Settings-ல் அனுமதி வழங்கவும்."
-                Toast.makeText(this, "Record Audio அனுமதி வழங்கப்படவில்லை", Toast.LENGTH_LONG).show()
+                statusText.text = "Microphone permission is required. Please allow it in Settings."
+                Toast.makeText(this, "Microphone permission was not granted.", Toast.LENGTH_LONG).show()
             }
         }
     }
 
     private fun startDubbing() {
         if (selectedVideoUri == null) {
-            statusText.text = "முதலில் 1. Gallery-யிலிருந்து வீடியோ தேர்ந்தெடுக்கவும்."
-            Toast.makeText(this, "முதலில் Gallery-யிலிருந்து வீடியோ தேர்ந்தெடுக்கவும்!", Toast.LENGTH_LONG).show()
+            statusText.text = "Please select a video from Gallery first."
+            Toast.makeText(this, "Please select a video from Gallery first.", Toast.LENGTH_LONG).show()
             return
         }
         isRecording = true
         btnExport.isEnabled = false
-        btnRecord.text = "நிறுத்து (Stop Recording)"
+        btnRecord.text = "STOP RECORDING"
         btnRecord.setBackgroundColor(0xFFC62828.toInt())
-        statusText.text = "Live Dubbing நடக்கிறது... பேசுங்கள்!"
+        statusText.text = "Recording in progress... Speak now."
 
         if (selectedVideoUri != null && !videoView.isPlaying) {
             videoView.seekTo(0)
@@ -245,10 +256,10 @@ class MainActivity : AppCompatActivity() {
             if (minBufSize <= 0) {
                 isRecording = false
                 runOnUiThread {
-                    btnRecord.text = "3. Live Dubbing தொடங்கு (Start)"
+                    btnRecord.text = "3. START / STOP DUBBING"
                     btnRecord.setBackgroundColor(0xFF2E7D32.toInt())
                     btnExport.isEnabled = true
-                    statusText.text = "இந்த போனில் AudioRecord தொடங்க முடியவில்லை. Microphone permission சரிபார்க்கவும்."
+                    statusText.text = "Could not start audio recording. Please check microphone permission."
                     recordingThread = null
                 }
                 return@thread
@@ -257,8 +268,8 @@ class MainActivity : AppCompatActivity() {
                 isRecording = false
                 runOnUiThread {
                     btnExport.isEnabled = true
-                    btnRecord.text = "3. Live Dubbing தொடங்கு (Start)"
-                    statusText.text = "Microphone permission தேவை."
+                    btnRecord.text = "3. START / STOP DUBBING"
+                    statusText.text = "Microphone permission is required."
                     recordingThread = null
                 }
                 return@thread
@@ -310,23 +321,23 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 recordingThread = null
                 btnRecord.isEnabled = true
-                btnRecord.text = "3. Live Dubbing தொடங்கு (Start)"
+                btnRecord.text = "3. START / STOP DUBBING"
                 btnRecord.setBackgroundColor(0xFF2E7D32.toInt())
                 btnExport.isEnabled = true
-                statusText.text = "ரெக்கார்டிங் முடிந்தது! இப்போது '4. Export / Save' அழுத்தி கேலரியில் சேமிக்கவும்."
+                statusText.text = "Recording complete. Press EXPORT / SAVE to create your video."
             }
         }
     }
 
     private fun showFileNameDialogAndExport() {
         if (isRecording || recordingThread?.isAlive == true) {
-            Toast.makeText(this, "முதலில் Dubbing-ஐ Stop செய்து முடியும் வரை காத்திருக்கவும்.", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Please stop recording and wait for it to finish.", Toast.LENGTH_LONG).show()
             return
         }
         val wavFile = tempDubWavFile
         if (wavFile == null || !wavFile.exists()) {
-            statusText.text = "Export செய்ய முன் வீடியோ தேர்வு செய்து Live Dubbing record செய்து Stop செய்யவும்."
-            Toast.makeText(this, "முதலில் Live Dubbing ரெக்கார்ட் செய்து Stop செய்யவும்!", Toast.LENGTH_LONG).show()
+            statusText.text = "Select a video, record your dubbing, and stop before exporting."
+            Toast.makeText(this, "Please record and stop dubbing before exporting.", Toast.LENGTH_LONG).show()
             return
         }
 
@@ -336,8 +347,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         AlertDialog.Builder(this)
-            .setTitle("ஃபைல் பெயரை உள்ளிடவும்")
-            .setMessage("கேலரியில் (Gallery) சேமிக்க வேண்டிய வீடியோ பெயரை டைப் செய்யவும்:")
+            .setTitle("ENTER FILE NAME")
+            .setMessage("Enter a name for the video to save in Gallery:")
             .setView(inputEdit)
             .setPositiveButton("Save to Gallery") { _, _ ->
                 val rawName = inputEdit.text.toString().trim().replace(Regex("[^a-zA-Z0-9_-]"), "_")
@@ -349,7 +360,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun exportToGallery(wavFile: File, fileName: String) {
-        statusText.text = "வீடியோ தயாராகி கேலரியில் சேமிக்கப்படுகிறது... காத்திருக்கவும்."
+        statusText.text = "Creating video and saving to Gallery... Please wait."
         thread {
             val videoUri = selectedVideoUri
             if (videoUri != null) {
@@ -363,8 +374,8 @@ class MainActivity : AppCompatActivity() {
                         lastExportedUri = savedUri
                         lastExportedMime = "video/mp4"
                         runOnUiThread {
-                            statusText.text = "வெற்றி! கேலரியில் சேமிக்கப்பட்டது: Movies/PattiPeranDubbing/$fileName.mp4"
-                            Toast.makeText(this, "கேலரியில் (Gallery) வீடியோ சேமிக்கப்பட்டது!", Toast.LENGTH_LONG).show()
+                            statusText.text = "Success! Saved to Movies/PattiPeranDubbing/$fileName.mp4"
+                            Toast.makeText(this, "Video saved to Gallery!", Toast.LENGTH_LONG).show()
                         }
                         return@thread
                     }
@@ -377,12 +388,12 @@ class MainActivity : AppCompatActivity() {
                 lastExportedUri = savedAudioUri
                 lastExportedMime = "audio/wav"
                 runOnUiThread {
-                    statusText.text = "ஆடியோ சேமிக்கப்பட்டது: Music/PattiPeranDubbing/$fileName.wav"
-                    Toast.makeText(this, "Music ஃபோல்டரில் சேமிக்கப்பட்டது!", Toast.LENGTH_LONG).show()
+                    statusText.text = "Audio saved to Music/PattiPeranDubbing/$fileName.wav"
+                    Toast.makeText(this, "Audio saved to Music folder.", Toast.LENGTH_LONG).show()
                 }
             } else {
                 runOnUiThread {
-                    statusText.text = "சேமிப்பதில் பிழை ஏற்பட்டது. மீண்டும் முயற்சிக்கவும்."
+                    statusText.text = "Could not save the file. Please try again."
                 }
             }
         }
@@ -587,7 +598,7 @@ class MainActivity : AppCompatActivity() {
         val uriToShare = lastExportedUri
         if (uriToShare == null) {
             statusText.text = "Share செய்ய முன் 4. Export / Save மூலம் கோப்பைச் சேமிக்கவும்."
-            Toast.makeText(this, "முதலில் Export / Save செய்யவும்!", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Please export and save the video first.", Toast.LENGTH_LONG).show()
             return
         }
 
@@ -596,7 +607,7 @@ class MainActivity : AppCompatActivity() {
             putExtra(Intent.EXTRA_STREAM, uriToShare)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        startActivity(Intent.createChooser(shareIntent, "டப்பிங் வீடியோவைப் பகிரவும் (Share)"))
+        startActivity(Intent.createChooser(shareIntent, "Share dubbed video"))
     }
 
     // Lightweight offline voice-tone presets. These alter tone/EQ while preserving
@@ -622,8 +633,8 @@ class MainActivity : AppCompatActivity() {
     private fun stopDubbing() {
         isRecording = false
         btnRecord.isEnabled = false
-        btnRecord.text = "Recording நிறுத்தப்படுகிறது..."
-        statusText.text = "Recording file முடிக்கப்படுகிறது. சிறிது காத்திருக்கவும்..."
+        btnRecord.text = "Stopping recording..."
+        statusText.text = "Finalizing recording... Please wait."
         if (videoView.isPlaying) videoView.pause()
     }
 
@@ -632,7 +643,7 @@ class MainActivity : AppCompatActivity() {
         try {
             videoMediaPlayer?.setVolume(volume, volume)
         } catch (e: IllegalStateException) {
-            statusText.text = "Video audio control இன்னும் தயாராகவில்லை."
+            statusText.text = "Video audio control is not ready yet."
         }
     }
 
