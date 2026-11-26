@@ -622,9 +622,11 @@ class MainActivity : AppCompatActivity() {
     private fun applyVoiceEffect(input: ShortArray, length: Int, mode: Int): ShortArray {
         if (mode == 0) return input.copyOf(length)
         val output = ShortArray(length)
-        val smoothing = if (mode == 1) 0.16f else 0.055f
-        val dryMix = if (mode == 1) 0.62f else 0.78f
-        val toneMix = if (mode == 1) 0.38f else 0.58f
+        // Stronger EQ contrast makes the two offline presets easier to hear.
+        // These are tone filters, not AI age/gender voice conversion.
+        val smoothing = if (mode == 1) 0.12f else 0.018f
+        val dryMix = if (mode == 1) 0.20f else 0.24f
+        val toneMix = if (mode == 1) 0.80f else 0.76f
         for (i in 0 until length) {
             val sample = input[i].toFloat()
             voiceLowPassState += smoothing * (sample - voiceLowPassState)
