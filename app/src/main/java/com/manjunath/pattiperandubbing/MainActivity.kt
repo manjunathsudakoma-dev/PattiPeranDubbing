@@ -13,6 +13,10 @@ import android.os.Environment
 import android.provider.MediaStore
 import android.widget.*
 import android.view.Gravity
+import android.view.TextureView
+import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
@@ -26,13 +30,14 @@ import kotlin.concurrent.thread
 
 class MainActivity : AppCompatActivity() {
 
-    private lateinit var videoView: VideoView
+    private lateinit var videoTextureView: TextureView
+    private var videoPlayer: ExoPlayer? = null
     private lateinit var statusText: TextView
     private lateinit var btnRecord: Button
     private lateinit var btnExport: Button
     private lateinit var btnShare: Button
     private lateinit var muteOriginalSwitch: Switch
-    private var videoMediaPlayer: MediaPlayer? = null
+    
     @Volatile private var originalVideoMuted = true
 
     @Volatile private var isRecording = false
@@ -47,9 +52,7 @@ class MainActivity : AppCompatActivity() {
     private val pickVideoLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         if (uri != null) {
             selectedVideoUri = uri
-            videoView.setVideoURI(uri)
-            videoView.start()
-            statusText.text = "Loading video preview..."
+            loadVideoPreview(uri)
         } else {
             statusText.text = "Video selection cancelled."
         }
@@ -81,25 +84,21 @@ class MainActivity : AppCompatActivity() {
             ).apply { setMargins(0, 8, 0, 16) }
             setBackgroundColor(0xFF000000.toInt())
         }
-        videoView = VideoView(this).apply {
-            // Fill the preview container; VideoView keeps the video's aspect ratio.
+        videoTextureView = TextureView(this).apply {
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 Gravity.CENTER
             )
-            setBackgroundColor(0xFF000000.toInt())
         }
-        videoPreviewContainer.addView(videoView)
-        videoView.setOnPreparedListener { mediaPlayer ->
-            videoMediaPlayer = mediaPlayer
-            applyOriginalAudioMute()
-            statusText.text = "Video loaded. Choose a voice mode and press START DUBBING."
-        }
-        videoView.setOnErrorListener { _, what, extra ->
-            videoMediaPlayer = null
-            statusText.text = "Cannot play this video format (error $what/$extra). Try another MP4 video."
-            true
+        videoPreviewContainer.addView(videoTextureView)
+        videoTextureView.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+            override fun onSurfaceTextureAvailable(surface: android.graphics.SurfaceTexture, width: Int, height: Int) {
+                selectedVideoUri?.let { loadVideoPreview(it) }
+            }
+            override fun onSurfaceTextureSizeChanged(surface: android.graphics.SurfaceTexture, width: Int, height: Int) {}
+            override fun onSurfaceTextureDestroyed(surface: android.graphics.SurfaceTexture): Boolean = true
+            override fun onSurfaceTextureUpdated(surface: android.graphics.SurfaceTexture) {}
         }
 
         muteOriginalSwitch = Switch(this).apply {
@@ -247,9 +246,9 @@ class MainActivity : AppCompatActivity() {
         btnRecord.setBackgroundColor(0xFFC62828.toInt())
         statusText.text = "Recording in progress... Speak now."
 
-        if (selectedVideoUri != null && !videoView.isPlaying) {
-            videoView.seekTo(0)
-            videoView.start()
+        videoPlayer?.let { player ->
+            if (player.playbackState == Player.STATE_ENDED) player.seekTo(0)
+            player.play()
         }
 
         voiceLowPassState = 0f
@@ -644,16 +643,53 @@ class MainActivity : AppCompatActivity() {
         btnRecord.isEnabled = false
         btnRecord.text = "Stopping recording..."
         statusText.text = "Finalizing recording... Please wait."
-        if (videoView.isPlaying) videoView.pause()
+        videoPlayer?.pause()
+    }
+
+    private fun loadVideoPreview(uri: Uri) {
+        if (!videoTextureView.isAvailable) {
+            statusText.text = "Preparing video preview..."
+            return
+        }
+        try {
+            videoPlayer?.release()
+            videoPlayer = ExoPlayer.Builder(this).build().also { player ->
+                player.setVideoTextureView(videoTextureView)
+                player.volume = if (originalVideoMuted) 0f else 1f
+                player.addListener(object : Player.Listener {
+                    override fun onPlaybackStateChanged(playbackState: Int) {
+                        when (playbackState) {
+                            Player.STATE_READY -> statusText.text = "Video loaded. Press START DUBBING when ready."
+                            Player.STATE_BUFFERING -> statusText.text = "Loading video preview..."
+                            Player.STATE_ENDED -> statusText.text = "Video playback finished. Press START DUBBING to replay."
+                        }
+                    }
+                    override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                        statusText.text = "Video playback error: ${error.errorCodeName}. Try a standard MP4 (H.264/AAC)."
+                    }
+                })
+                player.setMediaItem(MediaItem.fromUri(uri))
+                player.prepare()
+                player.playWhenReady = true
+            }
+        } catch (e: Exception) {
+            statusText.text = "Unable to open video preview: ${e.message ?: "unknown error"}"
+        }
     }
 
     private fun applyOriginalAudioMute() {
-        val volume = if (originalVideoMuted) 0f else 1f
-        try {
-            videoMediaPlayer?.setVolume(volume, volume)
-        } catch (e: IllegalStateException) {
-            statusText.text = "Video audio control is not ready yet."
-        }
+        videoPlayer?.volume = if (originalVideoMuted) 0f else 1f
+    }
+
+    override fun onStop() {
+        super.onStop()
+        videoPlayer?.pause()
+    }
+
+    override fun onDestroy() {
+        videoPlayer?.release()
+        videoPlayer = null
+        super.onDestroy()
     }
 
     private fun writeWavHeader(file: File, totalAudioLen: Long, sampleRate: Long, channels: Int, byteRate: Long) {
