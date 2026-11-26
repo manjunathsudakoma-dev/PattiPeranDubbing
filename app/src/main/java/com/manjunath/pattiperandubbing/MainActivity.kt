@@ -16,6 +16,7 @@ import android.provider.MediaStore
 import android.widget.*
 import android.view.Gravity
 import android.view.TextureView
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
@@ -631,9 +632,13 @@ class MainActivity : AppCompatActivity() {
                 .setRemoveVideo(true)
                 .build()
 
-            val videoSequence = EditedMediaItemSequence.withVideoFrom(listOf(videoItem))
-            val audioSequence = EditedMediaItemSequence.withAudioFrom(listOf(dubbedAudioItem))
-            val composition = Composition.Builder(listOf(videoSequence, audioSequence)).build()
+            val videoSequence = EditedMediaItemSequence.Builder(setOf(C.TRACK_TYPE_VIDEO))
+                .addItems(listOf(videoItem))
+                .build()
+            val audioSequence = EditedMediaItemSequence.Builder(setOf(C.TRACK_TYPE_AUDIO))
+                .addItems(listOf(dubbedAudioItem))
+                .build()
+            val composition = Composition.Builder(videoSequence, audioSequence).build()
 
             // Transformer must be created and started on the app's main thread.
             runOnUiThread {
