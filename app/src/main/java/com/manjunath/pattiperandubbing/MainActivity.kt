@@ -684,6 +684,9 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 try {
                     val transformer = Transformer.Builder(this)
+                        // Media3 defaults to landscape encoding plus a rotation tag for portrait output.
+                        // Encode portrait frames natively so the exported MP4 has true 1080x1920 dimensions.
+                        .setPortraitEncodingEnabled(ratio == 0)
                         .addListener(object : Transformer.Listener {
                             override fun onCompleted(composition: Composition, exportResult: ExportResult) {
                                 success.set(outputFile.exists() && outputFile.length() > 1000L)
