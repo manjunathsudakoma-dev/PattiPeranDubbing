@@ -14,6 +14,9 @@ import android.os.Looper
 import android.os.Environment
 import android.provider.MediaStore
 import android.widget.*
+import android.text.Spannable
+import android.text.SpannableString
+import android.text.style.ForegroundColorSpan
 import android.view.Gravity
 import android.view.TextureView
 import androidx.media3.common.MediaItem
@@ -26,6 +29,8 @@ import androidx.media3.transformer.Effects
 import androidx.media3.transformer.ExportException
 import androidx.media3.transformer.ExportResult
 import androidx.media3.effect.Presentation
+import androidx.media3.effect.TextOverlay
+import androidx.media3.effect.OverlayEffect
 import androidx.media3.transformer.Transformer
 import androidx.media3.common.util.UnstableApi
 import java.util.concurrent.CountDownLatch
@@ -54,6 +59,7 @@ class MainActivity : AppCompatActivity() {
     private var dubPreviewPlayer: MediaPlayer? = null
     @Volatile private var voiceVolume = 1.0f
     @Volatile private var syncOffsetMs = 0
+    @Volatile private var noiseReductionEnabled = true
     private lateinit var captionInput: EditText
     private lateinit var captionLanguage: Spinner
     private lateinit var muteOriginalSwitch: Switch
@@ -306,6 +312,12 @@ class MainActivity : AppCompatActivity() {
             text = "SAVE DRAFT"
             setOnClickListener { saveDraft() }
         }
+        val noiseReductionSwitch = Switch(this).apply {
+            text = "BASIC NOISE GATE (OFFLINE)"
+            setTextColor(0xFFFFFFFF.toInt())
+            isChecked = true
+            setOnCheckedChangeListener { _, checked -> noiseReductionEnabled = checked }
+        }
         val syncLabel = TextView(this).apply {
             text = "VOICE SYNC: 0 ms"
             setTextColor(0xFFFFFFFF.toInt())
@@ -395,6 +407,7 @@ class MainActivity : AppCompatActivity() {
         rootLayout.addView(radioGroup)
         rootLayout.addView(volumeLabel)
         rootLayout.addView(voiceVolumeSeek)
+        rootLayout.addView(noiseReductionSwitch)
         rootLayout.addView(syncLabel)
         rootLayout.addView(syncSeek)
         rootLayout.addView(captionLabel)
@@ -521,7 +534,8 @@ class MainActivity : AppCompatActivity() {
             while (isRecording) {
                 val read = recorder.read(buffer, 0, buffer.size)
                 if (read > 0 && !isPaused) {
-                    val toned = applyVoiceEffect(buffer, read, currentVoiceMode)
+                    val cleaned = applyNoiseGate(buffer, read)
+                    val toned = applyVoiceEffect(cleaned, read, currentVoiceMode)
                     val processed = ShortArray(toned.size) { i ->
                         (toned[i].toFloat() * voiceVolume).toInt().coerceIn(-32768, 32767).toShort()
                     }
@@ -734,6 +748,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun exportToGallery(wavFile: File, fileName: String) {
+        val captionForExport = captionInput.text.toString().trim()
         btnExport.isEnabled = false
         statusText.text = "Preparing your dubbed MP4..."
         thread {
@@ -759,7 +774,7 @@ class MainActivity : AppCompatActivity() {
 
             val shiftedWav = File(cacheDir, "temp_dub_voice_synced.wav")
             val syncReady = createSyncedWav(wavFile, shiftedWav, syncOffsetMs)
-            val merged = syncReady && composeVideoAndWavToMp4(videoUri, shiftedWav, tempMp4, selectedAspectRatio)
+            val merged = syncReady && composeVideoAndWavToMp4(videoUri, shiftedWav, tempMp4, selectedAspectRatio, captionForExport)
             if (merged && tempMp4.exists() && tempMp4.length() > 1000) {
                 val savedUri = saveFileToMediaStoreVideo(tempMp4, "$fileName.mp4")
                 if (savedUri != null) {
@@ -855,7 +870,8 @@ class MainActivity : AppCompatActivity() {
         videoUri: Uri,
         wavFile: File,
         outputFile: File,
-        ratio: Int
+        ratio: Int,
+        captionText: String
     ): Boolean {
         val width = if (ratio == 0) 1080 else 1920
         val height = if (ratio == 0) 1920 else 1080
@@ -884,7 +900,12 @@ class MainActivity : AppCompatActivity() {
                                 height,
                                 Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP
                             )
-                        )
+                        ) + if (captionText.isNotBlank()) {
+                            val styledCaption = SpannableString(captionText).apply {
+                                setSpan(ForegroundColorSpan(android.graphics.Color.WHITE), 0, length, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                            }
+                            listOf(OverlayEffect(listOf(TextOverlay.createStaticTextOverlay(styledCaption))))
+                        } else emptyList()
                     )
                 )
                 .build()
@@ -971,6 +992,24 @@ class MainActivity : AppCompatActivity() {
 
     // Lightweight offline voice-tone presets. These alter tone/EQ while preserving
     // the exact sample count, so the recorded audio duration stays aligned with video.
+    private fun applyNoiseGate(input: ShortArray, length: Int): ShortArray {
+        if (!noiseReductionEnabled || length <= 0) return input.copyOf(length)
+        var sum = 0.0
+        for (i in 0 until length) {
+            val sample = input[i].toDouble()
+            sum += sample * sample
+        }
+        val rms = kotlin.math.sqrt(sum / length)
+        val gain = when {
+            rms < 180.0 -> 0.08f
+            rms < 420.0 -> 0.35f
+            else -> 1.0f
+        }
+        return ShortArray(length) { i ->
+            (input[i].toFloat() * gain).toInt().coerceIn(-32768, 32767).toShort()
+        }
+    }
+
     private fun applyVoiceEffect(input: ShortArray, length: Int, mode: Int): ShortArray {
         if (mode == 0) return input.copyOf(length)
         val output = ShortArray(length)
