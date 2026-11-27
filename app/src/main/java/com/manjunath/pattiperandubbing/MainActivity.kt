@@ -53,6 +53,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnSaveDraft: Button
     private var dubPreviewPlayer: MediaPlayer? = null
     @Volatile private var voiceVolume = 1.0f
+    @Volatile private var syncOffsetMs = 0
+    private lateinit var captionInput: EditText
+    private lateinit var captionLanguage: Spinner
     private lateinit var muteOriginalSwitch: Switch
     private lateinit var videoSeekBar: SeekBar
     private lateinit var videoTimeText: TextView
@@ -303,6 +306,37 @@ class MainActivity : AppCompatActivity() {
             text = "SAVE DRAFT"
             setOnClickListener { saveDraft() }
         }
+        val syncLabel = TextView(this).apply {
+            text = "VOICE SYNC: 0 ms"
+            setTextColor(0xFFFFFFFF.toInt())
+            setPadding(0, 14, 0, 4)
+        }
+        val syncSeek = SeekBar(this).apply {
+            max = 100
+            progress = 50
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                    syncOffsetMs = (progress - 50) * 100
+                    syncLabel.text = "VOICE SYNC: ${if (syncOffsetMs > 0) "+" else ""}${syncOffsetMs} ms"
+                }
+                override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+                override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+            })
+        }
+        val captionLabel = TextView(this).apply {
+            text = "CAPTION TEXT (Tamil / Telugu / English)"
+            setTextColor(0xFFFFFFFF.toInt())
+            setPadding(0, 14, 0, 4)
+        }
+        captionLanguage = Spinner(this).apply {
+            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, listOf("Tamil", "Telugu", "English"))
+        }
+        captionInput = EditText(this).apply {
+            hint = "Type caption here (single caption for the full video)"
+            setTextColor(0xFFFFFFFF.toInt())
+            setHintTextColor(0xFFAAAAAA.toInt())
+            setBackgroundColor(0xFF292929.toInt())
+        }
         btnPreviewDub = Button(this).apply {
             text = "PREVIEW RECORDED DUBBING"
             setOnClickListener { previewDubbing() }
@@ -361,6 +395,11 @@ class MainActivity : AppCompatActivity() {
         rootLayout.addView(radioGroup)
         rootLayout.addView(volumeLabel)
         rootLayout.addView(voiceVolumeSeek)
+        rootLayout.addView(syncLabel)
+        rootLayout.addView(syncSeek)
+        rootLayout.addView(captionLabel)
+        rootLayout.addView(captionLanguage)
+        rootLayout.addView(captionInput)
         rootLayout.addView(btnRecord)
         rootLayout.addView(btnPauseResume)
         rootLayout.addView(btnEraseDubbing)
@@ -536,6 +575,9 @@ class MainActivity : AppCompatActivity() {
                 .putString("video_uri", uri.toString())
                 .putInt("aspect_ratio", selectedAspectRatio)
                 .putInt("voice_mode", currentVoiceMode)
+                .putInt("sync_offset_ms", syncOffsetMs)
+                .putString("caption_text", captionInput.text.toString())
+                .putInt("caption_language", captionLanguage.selectedItemPosition)
                 .putString("wav_path", tempDubWavFile?.absolutePath ?: "")
                 .apply()
             statusText.text = "Draft saved on this phone. Reopen the app to continue."
@@ -552,6 +594,9 @@ class MainActivity : AppCompatActivity() {
             selectedVideoUri = Uri.parse(savedUri)
             selectedAspectRatio = prefs.getInt("aspect_ratio", 0)
             currentVoiceMode = prefs.getInt("voice_mode", 0)
+            syncOffsetMs = prefs.getInt("sync_offset_ms", 0)
+            captionInput.setText(prefs.getString("caption_text", "") ?: "")
+            captionLanguage.setSelection(prefs.getInt("caption_language", 0).coerceIn(0, 2))
             val savedWav = prefs.getString("wav_path", "") ?: ""
             if (savedWav.isNotBlank()) {
                 val candidate = File(savedWav)
@@ -562,6 +607,28 @@ class MainActivity : AppCompatActivity() {
             if (videoTextureView.isAvailable) selectedVideoUri?.let { loadVideoPreview(it) }
         } catch (e: Exception) {
             statusText.text = "Saved draft could not be restored. Please select the video again."
+        }
+    }
+
+    private fun createSyncedWav(source: File, output: File, offsetMs: Int): Boolean {
+        return try {
+            val offsetBytes = (kotlin.math.abs(offsetMs).toLong() * 44100L * 2L) / 1000L
+            FileInputStream(source).use { input ->
+                FileOutputStream(output).use { out ->
+                    input.skip(44L)
+                    out.write(ByteArray(44))
+                    if (offsetMs > 0) out.write(ByteArray(offsetBytes.toInt()))
+                    if (offsetMs < 0) input.skip(offsetBytes)
+                    input.copyTo(out)
+                }
+            }
+            val dataLength = output.length() - 44L
+            if (dataLength <= 0L || dataLength > 0x7fffffffL) return false
+            writeWavHeader(output, dataLength, 44100L, 1, 88200L)
+            true
+        } catch (e: Exception) {
+            android.util.Log.e("PattiPeranSync", "Could not adjust voice sync", e)
+            false
         }
     }
 
@@ -690,7 +757,9 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
-            val merged = composeVideoAndWavToMp4(videoUri, wavFile, tempMp4, selectedAspectRatio)
+            val shiftedWav = File(cacheDir, "temp_dub_voice_synced.wav")
+            val syncReady = createSyncedWav(wavFile, shiftedWav, syncOffsetMs)
+            val merged = syncReady && composeVideoAndWavToMp4(videoUri, shiftedWav, tempMp4, selectedAspectRatio)
             if (merged && tempMp4.exists() && tempMp4.length() > 1000) {
                 val savedUri = saveFileToMediaStoreVideo(tempMp4, "$fileName.mp4")
                 if (savedUri != null) {
