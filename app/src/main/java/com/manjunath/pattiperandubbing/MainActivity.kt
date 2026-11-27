@@ -49,6 +49,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnRecord: Button
     private lateinit var btnExport: Button
     private lateinit var btnShare: Button
+    private lateinit var btnPreviewDub: Button
+    private var dubPreviewPlayer: MediaPlayer? = null
+    @Volatile private var voiceVolume = 1.0f
     private lateinit var muteOriginalSwitch: Switch
     private lateinit var videoSeekBar: SeekBar
     private lateinit var videoTimeText: TextView
@@ -277,6 +280,28 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        val volumeLabel = TextView(this).apply {
+            text = "DUBBING VOICE VOLUME: 100%"
+            setTextColor(0xFFFFFFFF.toInt())
+            setPadding(0, 16, 0, 4)
+        }
+        val voiceVolumeSeek = SeekBar(this).apply {
+            max = 200
+            progress = 100
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                    voiceVolume = progress / 100f
+                    volumeLabel.text = "DUBBING VOICE VOLUME: $progress%"
+                }
+                override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+                override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+            })
+        }
+        btnPreviewDub = Button(this).apply {
+            text = "PREVIEW RECORDED DUBBING"
+            setOnClickListener { previewDubbing() }
+        }
+
         val btnEraseDubbing = Button(this).apply {
             text = "ERASE ALL DUBBING"
             setBackgroundColor(0xFFB71C1C.toInt())
@@ -328,9 +353,12 @@ class MainActivity : AppCompatActivity() {
         rootLayout.addView(ratioGroup)
         rootLayout.addView(voiceLabel)
         rootLayout.addView(radioGroup)
+        rootLayout.addView(volumeLabel)
+        rootLayout.addView(voiceVolumeSeek)
         rootLayout.addView(btnRecord)
         rootLayout.addView(btnPauseResume)
         rootLayout.addView(btnEraseDubbing)
+        rootLayout.addView(btnPreviewDub)
         rootLayout.addView(actionRow)
         rootLayout.addView(statusText)
 
@@ -446,7 +474,10 @@ class MainActivity : AppCompatActivity() {
             while (isRecording) {
                 val read = recorder.read(buffer, 0, buffer.size)
                 if (read > 0 && !isPaused) {
-                    val processed = applyVoiceEffect(buffer, read, currentVoiceMode)
+                    val toned = applyVoiceEffect(buffer, read, currentVoiceMode)
+                    val processed = ShortArray(toned.size) { i ->
+                        (toned[i].toFloat() * voiceVolume).toInt().coerceIn(-32768, 32767).toShort()
+                    }
                     player.write(processed, 0, processed.size)
 
                     val byteBuf = ByteArray(processed.size * 2)
@@ -479,6 +510,39 @@ class MainActivity : AppCompatActivity() {
                 btnExport.isEnabled = true
                 statusText.text = "Recording complete. Press EXPORT / SAVE to create your video."
             }
+        }
+    }
+
+    private fun previewDubbing() {
+        val wav = tempDubWavFile
+        if (wav == null || !wav.exists() || wav.length() <= 44L) {
+            statusText.text = "Record and stop your dubbing before previewing."
+            Toast.makeText(this, "No completed dubbing to preview.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        try {
+            dubPreviewPlayer?.release()
+            dubPreviewPlayer = android.media.MediaPlayer().apply {
+                setDataSource(wav.absolutePath)
+                setOnPreparedListener { media ->
+                    media.start()
+                    statusText.text = "Playing dubbing preview..."
+                }
+                setOnCompletionListener { media ->
+                    media.release()
+                    dubPreviewPlayer = null
+                    statusText.text = "Dubbing preview finished."
+                }
+                setOnErrorListener { media, _, _ ->
+                    media.release()
+                    dubPreviewPlayer = null
+                    statusText.text = "Could not play dubbing preview."
+                    true
+                }
+                prepareAsync()
+            }
+        } catch (e: Exception) {
+            statusText.text = "Preview error. Please try recording again."
         }
     }
 
@@ -865,6 +929,8 @@ class MainActivity : AppCompatActivity() {
         seekHandler.removeCallbacks(seekUpdater)
         videoPlayer?.release()
         videoPlayer = null
+        dubPreviewPlayer?.release()
+        dubPreviewPlayer = null
         super.onDestroy()
     }
 
