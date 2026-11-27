@@ -30,6 +30,8 @@ import androidx.media3.transformer.ExportException
 import androidx.media3.transformer.ExportResult
 import androidx.media3.effect.Presentation
 import androidx.media3.effect.TextOverlay
+import androidx.media3.effect.TextureOverlay
+import com.google.common.collect.ImmutableList
 import androidx.media3.effect.OverlayEffect
 import androidx.media3.transformer.Transformer
 import androidx.media3.common.util.UnstableApi
@@ -904,7 +906,7 @@ class MainActivity : AppCompatActivity() {
                             val styledCaption = SpannableString(captionText).apply {
                                 setSpan(ForegroundColorSpan(android.graphics.Color.WHITE), 0, length, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
                             }
-                            listOf(OverlayEffect(listOf(TextOverlay.createStaticTextOverlay(styledCaption))))
+                            listOf(OverlayEffect(ImmutableList.of<TextureOverlay>(TextOverlay.createStaticTextOverlay(styledCaption))))
                         } else emptyList()
                     )
                 )
@@ -924,9 +926,6 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 try {
                     val transformer = Transformer.Builder(this)
-                        // Media3 defaults to landscape encoding plus a rotation tag for portrait output.
-                        // Encode portrait frames natively so the exported MP4 has true 1080x1920 dimensions.
-                        .setPortraitEncodingEnabled(ratio == 0)
                         .addListener(object : Transformer.Listener {
                             override fun onCompleted(composition: Composition, exportResult: ExportResult) {
                                 success.set(outputFile.exists() && outputFile.length() > 1000L)
