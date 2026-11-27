@@ -73,6 +73,8 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var originalVideoMuted = true
 
     @Volatile private var isRecording = false
+    @Volatile private var isPaused = false
+    private lateinit var btnPauseResume: Button
     @Volatile private var currentVoiceMode = 0
     private var voiceLowPassState = 0f
     private var recordingThread: Thread? = null
@@ -254,6 +256,27 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        btnPauseResume = Button(this).apply {
+            text = "PAUSE"
+            isEnabled = false
+            setBackgroundColor(0xFFEF6C00.toInt())
+            setTextColor(0xFFFFFFFF.toInt())
+            setOnClickListener {
+                if (isRecording) {
+                    isPaused = !isPaused
+                    if (isPaused) {
+                        videoPlayer?.pause()
+                        text = "RESUME"
+                        statusText.text = "Recording paused. Press RESUME to continue."
+                    } else {
+                        videoPlayer?.play()
+                        text = "PAUSE"
+                        statusText.text = "Recording resumed. Speak now."
+                    }
+                }
+            }
+        }
+
         val btnEraseDubbing = Button(this).apply {
             text = "ERASE ALL DUBBING"
             setBackgroundColor(0xFFB71C1C.toInt())
@@ -306,6 +329,7 @@ class MainActivity : AppCompatActivity() {
         rootLayout.addView(voiceLabel)
         rootLayout.addView(radioGroup)
         rootLayout.addView(btnRecord)
+        rootLayout.addView(btnPauseResume)
         rootLayout.addView(btnEraseDubbing)
         rootLayout.addView(actionRow)
         rootLayout.addView(statusText)
@@ -355,6 +379,9 @@ class MainActivity : AppCompatActivity() {
             return
         }
         isRecording = true
+        isPaused = false
+        btnPauseResume.isEnabled = true
+        btnPauseResume.text = "PAUSE"
         btnExport.isEnabled = false
         btnRecord.text = "STOP RECORDING"
         btnRecord.setBackgroundColor(0xFFC62828.toInt())
@@ -376,8 +403,10 @@ class MainActivity : AppCompatActivity() {
             if (minBufSize <= 0) {
                 isRecording = false
                 runOnUiThread {
-                    btnRecord.text = "3. START / STOP DUBBING"
+                    btnRecord.text = "5. START / STOP DUBBING"
                     btnRecord.setBackgroundColor(0xFF2E7D32.toInt())
+                    btnPauseResume.isEnabled = false
+                    btnPauseResume.text = "PAUSE"
                     btnExport.isEnabled = true
                     statusText.text = "Could not start audio recording. Please check microphone permission."
                     recordingThread = null
@@ -388,7 +417,8 @@ class MainActivity : AppCompatActivity() {
                 isRecording = false
                 runOnUiThread {
                     btnExport.isEnabled = true
-                    btnRecord.text = "3. START / STOP DUBBING"
+                    btnRecord.text = "5. START / STOP DUBBING"
+                    btnPauseResume.isEnabled = false
                     statusText.text = "Microphone permission is required."
                     recordingThread = null
                 }
@@ -415,7 +445,7 @@ class MainActivity : AppCompatActivity() {
 
             while (isRecording) {
                 val read = recorder.read(buffer, 0, buffer.size)
-                if (read > 0) {
+                if (read > 0 && !isPaused) {
                     val processed = applyVoiceEffect(buffer, read, currentVoiceMode)
                     player.write(processed, 0, processed.size)
 
@@ -441,8 +471,11 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 recordingThread = null
                 btnRecord.isEnabled = true
-                btnRecord.text = "3. START / STOP DUBBING"
+                isPaused = false
+                btnRecord.text = "5. START / STOP DUBBING"
                 btnRecord.setBackgroundColor(0xFF2E7D32.toInt())
+                btnPauseResume.isEnabled = false
+                btnPauseResume.text = "PAUSE"
                 btnExport.isEnabled = true
                 statusText.text = "Recording complete. Press EXPORT / SAVE to create your video."
             }
@@ -774,6 +807,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun stopDubbing() {
         isRecording = false
+        isPaused = false
+        btnPauseResume.isEnabled = false
+        btnPauseResume.text = "PAUSE"
         btnRecord.isEnabled = false
         btnRecord.text = "Stopping recording..."
         statusText.text = "Finalizing recording... Please wait."
