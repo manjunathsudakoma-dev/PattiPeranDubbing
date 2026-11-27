@@ -50,6 +50,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnExport: Button
     private lateinit var btnShare: Button
     private lateinit var btnPreviewDub: Button
+    private lateinit var btnSaveDraft: Button
     private var dubPreviewPlayer: MediaPlayer? = null
     @Volatile private var voiceVolume = 1.0f
     private lateinit var muteOriginalSwitch: Switch
@@ -87,8 +88,9 @@ class MainActivity : AppCompatActivity() {
     private var lastExportedMime: String = "video/mp4"
     @Volatile private var selectedAspectRatio = 0 // 0 = 9:16 Shorts, 1 = 16:9 YouTube
 
-    private val pickVideoLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+    private val pickVideoLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         if (uri != null) {
+            try { contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (_: Exception) {}
             selectedVideoUri = uri
             loadVideoPreview(uri)
         } else {
@@ -195,7 +197,7 @@ class MainActivity : AppCompatActivity() {
             text = "1. SELECT VIDEO FROM GALLERY"
             setOnClickListener {
                 statusText.text = "Opening Gallery..."
-                pickVideoLauncher.launch("video/*")
+                pickVideoLauncher.launch(arrayOf("video/*"))
             }
         }
 
@@ -297,6 +299,10 @@ class MainActivity : AppCompatActivity() {
                 override fun onStopTrackingTouch(seekBar: SeekBar?) {}
             })
         }
+        btnSaveDraft = Button(this).apply {
+            text = "SAVE DRAFT"
+            setOnClickListener { saveDraft() }
+        }
         btnPreviewDub = Button(this).apply {
             text = "PREVIEW RECORDED DUBBING"
             setOnClickListener { previewDubbing() }
@@ -358,12 +364,14 @@ class MainActivity : AppCompatActivity() {
         rootLayout.addView(btnRecord)
         rootLayout.addView(btnPauseResume)
         rootLayout.addView(btnEraseDubbing)
+        rootLayout.addView(btnSaveDraft)
         rootLayout.addView(btnPreviewDub)
         rootLayout.addView(actionRow)
         rootLayout.addView(statusText)
 
         scrollView.addView(rootLayout)
         setContentView(scrollView)
+        restoreDraft()
         seekHandler.post(seekUpdater)
     }
 
@@ -461,7 +469,7 @@ class MainActivity : AppCompatActivity() {
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build()
 
-            val outFile = File(cacheDir, "temp_dub_voice.wav")
+            val outFile = File(filesDir, "temp_dub_voice.wav")
             val fos = FileOutputStream(outFile)
             fos.write(ByteArray(44))
 
@@ -510,6 +518,45 @@ class MainActivity : AppCompatActivity() {
                 btnExport.isEnabled = true
                 statusText.text = "Recording complete. Press EXPORT / SAVE to create your video."
             }
+        }
+    }
+
+    private fun saveDraft() {
+        val uri = selectedVideoUri
+        if (uri == null) {
+            statusText.text = "Select a video before saving a draft."
+            return
+        }
+        try {
+            getSharedPreferences("patti_peran_draft", MODE_PRIVATE).edit()
+                .putString("video_uri", uri.toString())
+                .putInt("aspect_ratio", selectedAspectRatio)
+                .putInt("voice_mode", currentVoiceMode)
+                .putString("wav_path", tempDubWavFile?.absolutePath ?: "")
+                .apply()
+            statusText.text = "Draft saved on this phone. Reopen the app to continue."
+            Toast.makeText(this, "Draft saved.", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            statusText.text = "Could not save draft."
+        }
+    }
+
+    private fun restoreDraft() {
+        val prefs = getSharedPreferences("patti_peran_draft", MODE_PRIVATE)
+        val savedUri = prefs.getString("video_uri", null) ?: return
+        try {
+            selectedVideoUri = Uri.parse(savedUri)
+            selectedAspectRatio = prefs.getInt("aspect_ratio", 0)
+            currentVoiceMode = prefs.getInt("voice_mode", 0)
+            val savedWav = prefs.getString("wav_path", "") ?: ""
+            if (savedWav.isNotBlank()) {
+                val candidate = File(savedWav)
+                if (candidate.exists() && candidate.length() > 44L) tempDubWavFile = candidate
+            }
+            statusText.text = "Draft restored. Your previous video selection is ready."
+            if (videoTextureView.isAvailable) selectedVideoUri?.let { loadVideoPreview(it) }
+        } catch (e: Exception) {
+            statusText.text = "Saved draft could not be restored. Please select the video again."
         }
     }
 
@@ -565,6 +612,7 @@ class MainActivity : AppCompatActivity() {
             .setPositiveButton("Erase") { _, _ ->
                 val deleted = wavFile.delete()
                 tempDubWavFile = null
+                getSharedPreferences("patti_peran_draft", MODE_PRIVATE).edit().remove("wav_path").apply()
                 btnExport.isEnabled = false
                 videoPlayer?.seekTo(0)
                 videoPlayer?.pause()
