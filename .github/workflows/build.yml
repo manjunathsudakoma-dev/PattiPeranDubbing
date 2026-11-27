@@ -2,7 +2,7 @@ name: Build Android APK
 
 on:
   push:
-    branches: [ "main", "fix/mp4-dubbing-export" ]
+    branches: [ "main", "fix/mp4-dubbing-export", "fix/mute-switch-and-button-feedback", "feature/v2-dubbing-tools" ]
   workflow_dispatch:
 
 jobs:
