@@ -522,6 +522,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun saveDraft() {
+        if (isRecording || recordingThread?.isAlive == true) {
+            Toast.makeText(this, "Stop recording before saving the draft.", Toast.LENGTH_SHORT).show()
+            return
+        }
         val uri = selectedVideoUri
         if (uri == null) {
             statusText.text = "Select a video before saving a draft."
@@ -553,6 +557,7 @@ class MainActivity : AppCompatActivity() {
                 val candidate = File(savedWav)
                 if (candidate.exists() && candidate.length() > 44L) tempDubWavFile = candidate
             }
+            btnExport.isEnabled = tempDubWavFile != null
             statusText.text = "Draft restored. Your previous video selection is ready."
             if (videoTextureView.isAvailable) selectedVideoUri?.let { loadVideoPreview(it) }
         } catch (e: Exception) {
